@@ -1,0 +1,14 @@
+{
+  "name": "블록 플래너",
+  "short_name": "블록 플래너",
+  "description": "태그별 시간 분배 · 블록 플래너",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#F6F7F9",
+  "theme_color": "#2B4EFF",
+  "orientation": "any",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
