@@ -876,77 +876,106 @@ function fileToSticker(input,cb){
 }
 
 /* ══════════════════════════════════════════════════════════════
-   Firebase Realtime Database 동기화
-   · 변경 즉시 WebSocket으로 모든 기기에 실시간 반영
-   · AES-GCM 종단간 암호화 — Firebase도 내용을 볼 수 없음
-   · 무료(Spark) 플랜, 미사용 일시정지 없음
-
-   [Firebase 준비 — 최초 1회]
-   1. firebase.google.com → Google 계정으로 로그인
-   2. "프로젝트 추가" → 이름 입력 → Google Analytics 선택사항 → 만들기
-   3. 왼쪽 메뉴 "빌드 → Realtime Database" → "데이터베이스 만들기"
-      → 위치 "asia-southeast1" 선택 → "테스트 모드"로 시작
-   4. 데이터베이스 URL 복사 (https://xxx-default-rtdb.asia-southeast1.firebasedatabase.app)
-   5. 왼쪽 "프로젝트 설정(⚙)" → "웹 앱 추가(</>)" → 앱 등록
-      → firebaseConfig에서 apiKey 복사
-   6. 보안 강화: Realtime Database → 규칙 탭 → 아래로 변경 후 게시:
-      { "rules": { ".read": true, ".write": true } }
-      (테스트 모드 만료 전에 변경 필요)
+   Firebase 인증 + Realtime Database 동기화
+   · Google 로그인 — 본인 계정만 데이터 접근 가능
+   · 암호화 없이 UID 기반 보안 (Firebase 규칙으로 보호)
+   · 직렬화 오류 없음, 실시간 WebSocket 동기화
 ══════════════════════════════════════════════════════════════ */
-let fbCfg=null; // {url, apiKey, syncId, pw}
+let fbApp=null, fbAuth=null, fbDb=null;
+let fbUser=null, fbCfg=null;
 let fbState={status:"off",last:0,msg:""};
 let fbListener=null, fbIsPushing=false;
 
 function fbLoadCfg(){
-  try{const r=localStorage.getItem("planner-fb");fbCfg=r?JSON.parse(r):null;}catch{fbCfg=null;}
+  try{const r=localStorage.getItem("planner-fb2");fbCfg=r?JSON.parse(r):null;}catch{fbCfg=null;}
 }
 function fbSaveCfg(){
-  try{if(fbCfg)localStorage.setItem("planner-fb",JSON.stringify(fbCfg));
-    else localStorage.removeItem("planner-fb");}catch{}
+  try{if(fbCfg)localStorage.setItem("planner-fb2",JSON.stringify(fbCfg));
+    else localStorage.removeItem("planner-fb2");}catch{}
 }
-const fbReady=()=>!!(fbCfg&&fbCfg.url&&fbCfg.apiKey&&fbCfg.syncId&&fbCfg.pw);
+const fbReady=()=>!!(fbCfg&&fbCfg.url&&fbCfg.apiKey);
+const fbAuthed=()=>!!(fbUser&&fbDb);
 
-/* 암호화 (AES-GCM, PBKDF2) */
-const b64=buf=>btoa(String.fromCharCode(...new Uint8Array(buf)));
-const unb64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
-async function fbDeriveKey(){
-  const enc=new TextEncoder();
-  const base=await crypto.subtle.importKey("raw",enc.encode(fbCfg.pw),"PBKDF2",false,["deriveKey"]);
-  return crypto.subtle.deriveKey(
-    {name:"PBKDF2",salt:enc.encode("fb:"+fbCfg.syncId),iterations:100000,hash:"SHA-256"},
-    base,{name:"AES-GCM",length:256},false,["encrypt","decrypt"]);
-}
-async function fbEncrypt(obj){
-  let str;
-  try{str=JSON.stringify(obj);}catch(e){throw new Error("직렬화 실패: "+e.message);}
-  const key=await fbDeriveKey(),iv=crypto.getRandomValues(new Uint8Array(12));
-  const ct=await crypto.subtle.encrypt({name:"AES-GCM",iv},key,new TextEncoder().encode(str));
-  return "v1."+b64(iv)+"."+b64(ct);
-}
-async function fbDecrypt(s){
-  const parts=s.split(".");if(parts[0]!=="v1")throw new Error("format");
-  const key=await fbDeriveKey();
-  const pt=await crypto.subtle.decrypt({name:"AES-GCM",iv:unb64(parts[1])},key,unb64(parts[2]));
-  return JSON.parse(new TextDecoder().decode(pt));
+/* Firebase SDK를 동적으로 로드 */
+function fbLoadSDK(cb){
+  if(window.firebase){cb();return;}
+  const s1=document.createElement('script');
+  s1.src='https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js';
+  s1.onload=()=>{
+    const s2=document.createElement('script');
+    s2.src='https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js';
+    s2.onload=()=>{
+      const s3=document.createElement('script');
+      s3.src='https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js';
+      s3.onload=cb;
+      document.head.appendChild(s3);
+    };
+    document.head.appendChild(s2);
+  };
+  document.head.appendChild(s1);
 }
 
-/* syncId → 안전한 경로명 (슬래시 금지, 특수문자 제거) */
-const fbPath=()=>{
-  const safe=fbCfg.syncId.replace(/[.#$[\]/]/g,"_").slice(0,64);
-  return fbCfg.url.replace(/\/+$/,"")+"/planner/"+safe+".json";
-};
-const fbHeaders=()=>({"Content-Type":"application/json","x-goog-request-params":`key=${fbCfg.apiKey}`});
+function fbInit(cfg, onReady){
+  fbLoadSDK(()=>{
+    try{
+      if(!fbApp){
+        fbApp=firebase.initializeApp({
+          apiKey: cfg.apiKey,
+          authDomain: cfg.apiKey ? cfg.apiKey.slice(0,20)+"..." : "",
+          databaseURL: cfg.url,
+          projectId: cfg.url.match(/\/\/([^.]+)/)?.[1]||"",
+        });
+      }
+      fbAuth=firebase.auth(fbApp);
+      fbDb=firebase.database(fbApp);
+      fbAuth.onAuthStateChanged(user=>{
+        fbUser=user;
+        if(user){
+          fbState.status="ok";
+          onReady&&onReady(user);
+          fbListen();
+        }else{
+          fbState={status:"login",last:0,msg:""};
+          fbStopListen();
+        }
+        render();paintSync();
+      });
+    }catch(e){
+      fbState={status:"err",last:0,msg:fbFriendlyErr(e)};
+      paintSync();
+    }
+  });
+}
 
-/* 데이터 올리기 */
+function fbSignIn(){
+  if(!fbAuth)return;
+  const provider=new firebase.auth.GoogleAuthProvider();
+  fbAuth.signInWithPopup(provider).catch(e=>{
+    fbState={status:"err",last:0,msg:fbFriendlyErr(e)};
+    paintSync();render();
+  });
+}
+function fbSignOut(){
+  fbStopListen();
+  if(fbAuth)fbAuth.signOut();
+  fbUser=null;
+  fbState={status:"login",last:0,msg:""};
+  render();
+}
+
+/* 데이터 경로: /planner/{uid}/data */
+const fbDataRef=()=>fbDb&&fbUser?fbDb.ref('planner/'+fbUser.uid+'/data'):null;
+
+/* 올리기 */
 async function fbPush(){
-  if(!fbReady()||!data||fbIsPushing)return;
+  if(!fbAuthed()||fbIsPushing||!data)return;
   fbIsPushing=true;
-  fbState.status="syncing";paintSync();
   try{
-    const payload=await fbEncrypt(data);
-    const url=fbPath()+"?auth="+encodeURIComponent(fbCfg.apiKey);
-    const res=await fetch(url,{method:"PUT",body:JSON.stringify({payload,updatedAt:data.updatedAt||Date.now()})});
-    if(!res.ok)throw new Error("HTTP "+res.status);
+    const ref=fbDataRef();
+    if(!ref)throw new Error("ref 없음");
+    // JSON 직렬화만 (암호화 없음 — UID 규칙으로 보호)
+    const payload=JSON.parse(JSON.stringify(data)); // 순수 복사본
+    await ref.set({payload:JSON.stringify(payload), updatedAt:data.updatedAt||Date.now()});
     fbState={status:"ok",last:Date.now(),msg:""};
   }catch(e){
     fbState={status:"err",last:fbState.last,msg:fbFriendlyErr(e)};
@@ -955,112 +984,98 @@ async function fbPush(){
   }
 }
 
-/* 리스너 연결 — 변경 시 자동으로 받아서 반영 */
+/* 실시간 리스너 — 다른 기기에서 변경하면 즉시 반영 */
 function fbListen(){
-  if(!fbReady())return;
+  if(!fbAuthed())return;
   fbStopListen();
-  const url=fbPath()+"?auth="+encodeURIComponent(fbCfg.apiKey);
-  // Server-Sent Events (Firebase REST streaming)
-  try{
-    const es=new EventSource(url.replace(".json","/.json?accept=text/event-stream").replace("?auth=","?auth=").replace("/.json?auth=",".json?auth=")
-      .replace(/\.json\?/,".json?accept=text%2Fevent-stream&"));
-    // 간단히: polling 방식으로 30초마다 확인 (SSE 파싱이 복잡해서 안정적인 폴링 사용)
-    es.close();
-  }catch{}
-  // 30초 주기 폴링 + visibilitychange 즉시 확인으로 준실시간 구현
-  fbListener=setInterval(()=>fbPull(false),30000);
-  fbPull(true); // 연결 직후 즉시 한 번
+  const ref=fbDataRef();
+  if(!ref)return;
+  fbListener=ref.on('value', snap=>{
+    try{
+      const remote=snap.val();
+      if(!remote||!remote.payload)return;
+      const remoteAt=remote.updatedAt||0;
+      const localAt=data?data.updatedAt||0:0;
+      if(remoteAt>localAt+500){
+        // 서버가 더 최신 → 반영
+        const obj=JSON.parse(remote.payload);
+        data=migrate(obj);applyTheme();
+        store.set("planner-state",JSON.stringify(data));
+        render();
+      }
+      fbState={status:"ok",last:Date.now(),msg:""};
+      paintSync();
+    }catch(e){
+      fbState={status:"err",last:fbState.last,msg:fbFriendlyErr(e)};
+      paintSync();
+    }
+  }, e=>{
+    fbState={status:"err",last:fbState.last,msg:fbFriendlyErr(e)};
+    paintSync();
+  });
 }
 function fbStopListen(){
-  if(fbListener){clearInterval(fbListener);fbListener=null;}
-}
-
-/* 데이터 가져오기 */
-async function fbPull(force){
-  if(!fbReady()||!data)return;
-  fbState.status="syncing";paintSync();
-  try{
-    const url=fbPath()+"?auth="+encodeURIComponent(fbCfg.apiKey);
-    const res=await fetch(url);
-    if(!res.ok)throw new Error("HTTP "+res.status);
-    const remote=await res.json();
-    if(remote&&remote.payload){
-      const remoteAt=remote.updatedAt||0;
-      if(remoteAt>(data.updatedAt||0)+500){
-        // 서버가 더 최신 → 해독 후 반영
-        const obj=await fbDecrypt(remote.payload);
-        data=migrate(obj);applyTheme();render();
-        await store.set("planner-state",JSON.stringify(data));
-      }else if((data.updatedAt||0)>remoteAt+500){
-        // 이 기기가 더 최신 → 올리기
-        await fbPush();return;
-      }
-    }else{
-      // 서버에 없음 → 이 기기 데이터를 첫 업로드
-      await fbPush();return;
-    }
-    fbState={status:"ok",last:Date.now(),msg:""};
-  }catch(e){
-    fbState={status:"err",last:fbState.last,msg:fbFriendlyErr(e)};
-  }finally{
-    paintSync();
+  if(fbListener&&fbDb&&fbUser){
+    const ref=fbDataRef();
+    if(ref)ref.off('value',fbListener);
   }
+  fbListener=null;
 }
 
 function fbFriendlyErr(e){
-  const s=String((e&&(e.name+" "+e.message))||e);
-  if(/RangeError|call stack|Maximum/i.test(s))return"데이터 직렬화 오류";
-  if(/OperationError|format/i.test(s))return"비밀번호 또는 ID 불일치";
-  if(/HTTP 401|HTTP 403|Permission denied/i.test(s))return"API 키 또는 권한 오류 — Firebase 규칙을 확인하세요";
-  if(/HTTP 404/i.test(s))return"데이터베이스 URL이 올바르지 않아요";
-  if(/Failed to fetch|NetworkError|TypeError/i.test(s))return"네트워크 연결을 확인하세요";
+  const s=String((e&&(e.message||e.code))||e);
+  if(/permission-denied|PERMISSION_DENIED/i.test(s))return"권한 없음 — Firebase 규칙을 확인하세요";
+  if(/network-request-failed|Failed to fetch/i.test(s))return"네트워크 연결을 확인하세요";
+  if(/popup-blocked/i.test(s))return"팝업이 차단됐어요 — 팝업 허용 후 다시 시도";
+  if(/auth\/unauthorized-domain/i.test(s))return"이 도메인이 Firebase에 등록되지 않았어요";
+  if(/cancelled-popup-request/i.test(s))return"로그인이 취소됐어요";
   return s.slice(0,60);
 }
+
 function paintSync(){
   const el=document.getElementById("sync-status");if(!el)return;
-  el.textContent=!fbReady()?"미연결"
-    :fbState.status==="syncing"?"동기화 중…"
-    :fbState.status==="ok"?"☁ "+new Date(fbState.last).toLocaleTimeString()
-    :fbState.status==="err"?"오류: "+fbState.msg:"";
+  if(!fbReady()){el.textContent="미연결";el.style.color="var(--sub)";return;}
+  if(!fbUser){el.textContent="로그인 필요";el.style.color="var(--sub)";return;}
+  el.textContent=fbState.status==="ok"?"☁ "+new Date(fbState.last).toLocaleTimeString()
+    :fbState.status==="err"?"오류: "+fbState.msg
+    :fbState.status==="syncing"?"동기화 중…":"";
   el.style.color=fbState.status==="err"?"var(--danger)":"var(--sub)";
 }
+
 function syncSectionHTML(){
   let h='<div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px">'
     +'<div class="row" style="margin-bottom:8px"><h2 class="card-title">실시간 동기화 (Firebase)</h2>'
     +'<span id="sync-status" style="font-size:12px;margin-left:auto"></span></div>';
-  if(!(window.crypto&&window.crypto.subtle))
-    return h+'<p class="empty">이 환경에서는 암호화를 사용할 수 없습니다.</p></div>';
-  if(fbReady()){
-    h+='<p class="empty" style="margin-bottom:10px">동기화 ID <b>'+esc(fbCfg.syncId)+'</b> 로 연결 중.'
-      +' 데이터는 비밀번호로 암호화됩니다.</p>'
+
+  if(fbReady()&&fbUser){
+    // 로그인 완료 상태
+    h+='<div class="row" style="gap:8px;margin-bottom:10px">'
+      +'<div style="width:32px;height:32px;border-radius:50%;background:var(--accent-soft);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">👤</div>'
+      +'<div style="min-width:0"><div style="font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(fbUser.displayName||fbUser.email||"")+'</div>'
+      +'<div style="font-size:11px;color:var(--sub)">Google 계정으로 동기화 중</div></div></div>'
       +'<div class="row"><button class="btn gray" onclick="A.syncNow()">지금 동기화</button>'
-      +'<button class="btn gray" style="color:var(--danger)" onclick="A.syncOff()">연결 해제</button></div>';
+      +'<button class="btn gray" style="color:var(--danger)" onclick="A.syncOff()">로그아웃</button></div>';
+  }else if(fbReady()&&!fbUser){
+    // 설정은 됐으나 로그인 안 된 상태
+    h+='<p class="empty" style="margin-bottom:10px">Google 계정으로 로그인하면 모든 기기에서 자동 동기화됩니다.</p>'
+      +'<button class="btn" onclick="A.syncLogin()" style="background:#4285F4">'
+      +'<span style="display:flex;align-items:center;justify-content:center;gap:8px">'
+      +'<svg width="18" height="18" viewBox="0 0 48 48"><path fill="#fff" d="M44.5 20H24v8.5h11.8C34.7 33.9 30.1 37 24 37c-7.2 0-13-5.8-13-13s5.8-13 13-13c3.1 0 5.9 1.1 8.1 2.9l6.4-6.4C34.6 4.1 29.6 2 24 2 11.8 2 2 11.8 2 24s9.8 22 22 22c11 0 21-8 21-22 0-1.3-.2-2.7-.5-4z"/></svg>'
+      +'Google로 로그인</span></button>';
   }else{
+    // 미설정 상태
     h+='<div style="display:flex;flex-direction:column;gap:7px">'
       +'<input id="sy-url" placeholder="데이터베이스 URL (https://xxx.firebasedatabase.app)" value="'+esc(fbCfg?.url||"")+'">'
       +'<input id="sy-key" placeholder="API 키 (AIzaSy...)" value="'+esc(fbCfg?.apiKey||"")+'">'
-      +'<div class="row">'
-      +'<input id="sy-id" placeholder="동기화 ID — 기기끼리 같게" value="'+esc(fbCfg?.syncId||"")+'">'
-      +'<input id="sy-pw" type="password" placeholder="비밀번호"></div>'
-      +'<button class="btn" onclick="A.syncConnect()">연결하기</button>'
-      +'<p class="hint" style="margin:0">같은 ID·비밀번호를 입력한 기기끼리 30초 이내 자동 동기화됩니다.'
-      +' 비밀번호를 잊으면 클라우드 데이터를 해독할 수 없으니 꼭 기억해 주세요.</p>'
+      +'<button class="btn" onclick="A.syncConnect()">설정 저장 및 로그인</button>'
       +'<details style="font-size:12px;color:var(--sub)">'
-      +'<summary style="cursor:pointer;font-weight:700">처음이라면: Firebase 준비 방법 (5분)</summary>'
+      +'<summary style="cursor:pointer;font-weight:700">Firebase 정보 찾는 방법</summary>'
       +'<ol style="line-height:2;margin:8px 0 0;padding-left:18px">'
-      +'<li><b>firebase.google.com</b> → Google 계정으로 로그인</li>'
-      +'<li>"프로젝트 추가" → 이름 입력 → 만들기</li>'
-      +'<li>왼쪽 메뉴 <b>빌드 → Realtime Database</b> → "데이터베이스 만들기"<br>'
-      +'→ 지역: <b>asia-southeast1</b> → <b>테스트 모드</b>로 시작</li>'
-      +'<li>데이터베이스 URL 복사 (<code>https://xxx.asia-southeast1.firebasedatabase.app</code>)</li>'
-      +'<li>왼쪽 <b>프로젝트 설정(⚙)</b> → "웹 앱 추가(&lt;/&gt;)" → 앱 등록<br>'
-      +'→ <code>firebaseConfig</code>에서 <b>apiKey</b> 값 복사</li>'
-      +'</ol>'
-      +'<p style="margin:8px 0 0;color:var(--danger);font-weight:700">⚠ 테스트 모드는 30일 후 만료됩니다.<br>'
-      +'Realtime Database → 규칙 탭에서 아래로 바꾸고 게시하세요:</p>'
-      +'<pre style="background:#F2F4F8;border-radius:8px;padding:8px;font-size:11px;overflow-x:auto">'
-      +'{\n  "rules": {\n    ".read": true,\n    ".write": true\n  }\n}</pre>'
-      +'</details></div>';
+      +'<li><b>프로젝트 설정(⚙)</b> → 일반 탭 → "내 앱" 섹션</li>'
+      +'<li>웹 앱 없으면 "&lt;/&gt; 앱 추가" 클릭 후 등록</li>'
+      +'<li><code>databaseURL</code> → 데이터베이스 URL 칸에 입력</li>'
+      +'<li><code>apiKey</code> → API 키 칸에 입력</li>'
+      +'</ol></details></div>';
   }
   return h+'</div>';
 }
@@ -1163,18 +1178,31 @@ const A={
   syncConnect(){
     const url=document.getElementById("sy-url")?.value.trim();
     const apiKey=document.getElementById("sy-key")?.value.trim();
-    const syncId=document.getElementById("sy-id")?.value.trim();
-    const pw=document.getElementById("sy-pw")?.value;
-    if(!url||!apiKey||!syncId||!pw){alert("모두 입력해 주세요.");return;}
+    if(!url||!apiKey){alert("URL과 API 키를 모두 입력해 주세요.");return;}
     if(!/^https:\/\//.test(url)){alert("URL은 https://로 시작해야 해요.");return;}
-    fbCfg={url,apiKey,syncId,pw};fbSaveCfg();render();
-    fbListen(); // 리스너 시작 + 즉시 첫 동기화
+    fbCfg={url,apiKey};fbSaveCfg();
+    fbInit(fbCfg,()=>{fbPull&&fbPull();});
+    render();
   },
-  syncNow(){fbPull(true);},
+  syncLogin(){fbSignIn();},
+  syncNow(){
+    const ref=fbDataRef();
+    if(!ref){alert("로그인이 필요해요.");return;}
+    ref.once('value').then(snap=>{
+      const remote=snap.val();
+      if(remote&&remote.payload){
+        const remoteAt=remote.updatedAt||0;
+        if(remoteAt>(data.updatedAt||0)+500){
+          data=migrate(JSON.parse(remote.payload));applyTheme();render();
+          store.set("planner-state",JSON.stringify(data));
+        }else{fbPush();}
+      }else{fbPush();}
+      fbState={status:"ok",last:Date.now(),msg:""};paintSync();
+    }).catch(e=>{fbState={status:"err",last:fbState.last,msg:fbFriendlyErr(e)};paintSync();});
+  },
   syncOff(){
-    if(!confirm("Firebase 동기화를 해제할까요?"))return;
-    fbStopListen();fbCfg=null;fbSaveCfg();
-    fbState={status:"off",last:0,msg:""};render();
+    if(!confirm("Firebase 동기화를 해제하고 로그아웃할까요?"))return;
+    fbSignOut();fbCfg=null;fbSaveCfg();render();
   },
   /* 백업 */
   exportData(){const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="block-planner-"+todayKey()+".json";a.click();URL.revokeObjectURL(a.href);},
@@ -1188,8 +1216,11 @@ window.A=A;window.todoRowDragStart=todoRowDragStart;window.todoRowDragOver=todoR
   let raw=await store.get("planner-state");
   try{data=migrate(raw?JSON.parse(raw):null);}catch{data=makeDefault();}
   applyTheme();setBadge(fmtDate(new Date()));render();
-  if(fbReady())fbListen(); // 연결 설정이 있으면 리스너 시작
-  document.addEventListener("visibilitychange",()=>{if(!document.hidden)fbPull(false);});
+  // Firebase 설정이 있으면 SDK 로드 + 로그인 상태 감지 시작
+  if(fbReady())fbInit(fbCfg, ()=>{});
+  document.addEventListener("visibilitychange",()=>{
+    if(!document.hidden&&fbAuthed())fbPush();
+  });
   setInterval(()=>{if(data.view!=="circle")return;document.querySelectorAll(".circle-svg").forEach(sv=>{const compact=parseInt(sv.getAttribute("width"))<=200;const tmp=document.createElement("div");tmp.innerHTML=circleHTML(blockTimes(),tagMap(),compact?200:300);if(sv.parentElement)sv.parentElement.replaceWith(tmp.firstChild);});},60000);
 })();
 </script>
