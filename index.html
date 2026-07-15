@@ -919,11 +919,13 @@ function fbInit(cfg, onReady){
   fbLoadSDK(()=>{
     try{
       if(!fbApp){
+        // projectId: databaseURL에서 추출 (-default-rtdb 등 접미사 제거)
+        const projectId=(cfg.url.match(/\/\/([^.]+)/)?.[1]||"").replace(/-default-rtdb$/,"");
         fbApp=firebase.initializeApp({
           apiKey: cfg.apiKey,
-          authDomain: cfg.apiKey ? cfg.apiKey.slice(0,20)+"..." : "",
+          authDomain: projectId+".firebaseapp.com",
           databaseURL: cfg.url,
-          projectId: cfg.url.match(/\/\/([^.]+)/)?.[1]||"",
+          projectId: projectId,
         });
       }
       fbAuth=firebase.auth(fbApp);
