@@ -11,7 +11,7 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Nanum+Gothic&family=Nanum+Myeongjo&family=Gaegu&family=Do+Hyeon&family=Jua&family=Gowun+Dodum&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Nanum+Gothic&family=Nanum+Myeongjo&family=Gaegu&family=Do+Hyeon&family=Jua&family=Gowun+Dodum&family=Gowun+Batang&family=Nanum+Pen+Script&display=swap" rel="stylesheet">
 <style>
 :root{
   --bg:#F6F7F9;--card:#FFFFFF;--ink:#182035;--sub:#7B8496;
@@ -89,6 +89,17 @@ body.editing .sticker-item .del-handle{display:flex}
 .sticker-ctrl button{font-size:11px;font-weight:800;width:26px;height:24px;border:none;
   background:none;color:var(--ink);border-radius:5px;cursor:pointer}
 .sticker-ctrl button:active{background:var(--accent-soft)}
+#style-popup-bg{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:100;
+  display:flex;align-items:center;justify-content:center;padding:20px}
+#style-popup{background:var(--card);border-radius:16px;padding:16px;max-width:340px;width:100%;
+  box-shadow:0 10px 40px rgba(0,0,0,.2)}
+#block-popup-bg{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:100;
+  display:flex;align-items:center;justify-content:center;padding:20px}
+#block-popup{background:var(--card);border-radius:16px;padding:16px;max-width:380px;width:100%;
+  max-height:70vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,.2)}
+.trow-click{cursor:pointer}
+.trow-click:active{background:var(--accent-soft)}
+.circle-svg path{cursor:pointer}
 body.editing .sticker-item:hover .sticker-ctrl,body.editing .sticker-item.selected .sticker-ctrl{display:flex}
 #screen-layer{position:absolute;inset:0;pointer-events:none;z-index:5}
 #screen-layer .sticker-item{pointer-events:none}
@@ -310,28 +321,63 @@ function simulateAll(){
   }return{todayAlloc,finish};
 }
 
-/* ── 밀린 투두 감지 ── */
-function getOverdueTodos(){
-  /* 어제 이전에 할당됐어야 했는데 완료되지 않은 투두를 찾아 오늘로 끌어옴 */
-  const tk=todayKey();
-  const overdue=[];
-  /* 간단 방식: 마감이 지난 프로젝트 중 미완료 투두 */
+/* ── 밀린 프로젝트 감지 (5번 재구현) ──
+   "예정 종료일이 설정 마감일을 넘긴" 프로젝트를 찾아서,
+   마감일을 지키려면 계획된 배분 외에 추가로 해야 할 투두들을 계산 */
+function getBehindProjects(sim){
+  const result=[];
+  const today=todayDate();
   for(const p of data.projects){
     if(!p.deadline)continue;
-    const daysLeft=calcDDayNum(p.deadline);
-    const undone=p.todos.filter(t=>!t.done);
+    const undone=p.todos.filter(t=>!t.done).sort((a,b)=>(a.order??0)-(b.order??0));
     if(undone.length===0)continue;
-    /* 마감이 지났거나(음수) 임박(0~1일)한 프로젝트의 미완료 투두 */
-    if(daysLeft<0){
-      const tm=data.tags.find(t=>t.id===p.tagId);
-      undone.forEach(t=>{
-        overdue.push({todo:t,projectId:p.id,projName:p.name,hours:p.hoursPerTodo,
-          tagId:p.tagId,priority:p.priority,deadline:p.deadline,
-          overdueDays:Math.abs(daysLeft),tagColor:tm?tm.color:"#999"});
-      });
+    const deadline=new Date(p.deadline);deadline.setHours(23,59,59,0);
+    const fin=sim.finish[p.id];
+    /* 예정 종료일이 없거나(1년 내 종료 불가) 마감을 넘긴 경우 */
+    const isBehind=!fin||new Date(fin)>deadline;
+    if(!isBehind)continue;
+
+    /* 마감일까지 이 프로젝트에 배분될 예정 시간을 시뮬레이션으로 계산 */
+    const tag=data.tags.find(t=>t.id===p.tagId);
+    const tagColor=tag?tag.color:"#999";
+    let plannedHours=0;
+    if(tag){
+      /* 태그 내 프로젝트들로 간단 재시뮬레이션 (마감일까지만) */
+      const projs=data.projects.filter(q=>q.tagId===tag.id&&q.todos.some(t=>!t.done))
+        .sort((a,b)=>a.priority-b.priority);
+      const n=projs.length;
+      const state=projs.map((q,i)=>({id:q.id,remaining:q.todos.filter(t=>!t.done).length*q.hoursPerTodo,weight:n-i,cap:q.dailyCap||null}));
+      const date=new Date(today);
+      const maxDays=Math.max(0,calcDDayNum(p.deadline))+1; /* 오늘~마감일 */
+      for(let day=0;day<maxDays;day++){
+        const alive=state.filter(s=>s.remaining>0.001);if(!alive.length)break;
+        const avail=tag.weekHours[date.getDay()]||0;
+        if(avail>0){
+          const alloc=allocateDay(avail,alive);
+          for(const s of state){if(alloc[s.id]>0){
+            s.remaining-=alloc[s.id];
+            if(s.id===p.id)plannedHours+=alloc[s.id];
+          }}
+        }
+        date.setDate(date.getDate()+1);
+      }
     }
+    /* 마감까지 소화 가능한 투두 수 vs 남은 투두 수 → 초과분 */
+    const plannedCnt=Math.floor(plannedHours/p.hoursPerTodo+1e-9);
+    const extraCnt=Math.max(0,undone.length-plannedCnt);
+    if(extraCnt===0)continue; /* 계획대로면 맞출 수 있음 */
+    /* 추가로 해야 할 투두 = 뒤에서부터가 아니라 앞 순서대로 extraCnt개
+       (계획 배분 외의 것들 = 리스트 뒷부분이 자연스러움) */
+    const extraTodos=undone.slice(plannedCnt);
+    const dLeft=calcDDayNum(p.deadline);
+    result.push({
+      projectId:p.id,projName:p.name,tagColor,hours:p.hoursPerTodo,
+      deadline:p.deadline,daysLeft:dLeft,
+      finish:fin||null,
+      extraTodos,extraHours:extraTodos.length*p.hoursPerTodo
+    });
   }
-  return overdue;
+  return result;
 }
 
 /* ── 오늘 플랜 생성 (1번 버그 수정: 모든 블록 처리) ── */
@@ -509,10 +555,22 @@ document.addEventListener("mouseup",tDragEnd);
 document.addEventListener("touchend",tDragEnd);
 
 /* ── 스티커 HTML ── */
-const FONT_LIST=[["system","기본"],["'Nanum Gothic',sans-serif","나눔고딕"],["'Nanum Myeongjo',serif","나눔명조"],["'Gaegu',cursive","개구"],["'Do Hyeon',sans-serif","도현"],["'Jua',sans-serif","주아"],["'Gowun Dodum',sans-serif","고운돋움"],["monospace","고정폭"]];
+const FONT_LIST=[
+  ["system","기본"],
+  ["'Nanum Gothic',sans-serif","나눔고딕"],
+  ["'Nanum Myeongjo',serif","나눔명조 (세리프)"],
+  ["'Gowun Batang',serif","고운바탕 (세리프)"],
+  ["'Gaegu',cursive","개구"],
+  ["'Do Hyeon',sans-serif","도현"],
+  ["'Jua',sans-serif","주아"],
+  ["'Gowun Dodum',sans-serif","고운돋움"],
+  ["'Nanum Pen Script',cursive","나눔손글씨"],
+  ["monospace","고정폭"]
+];
+const STICKER_COLORS=["#182035","#2B4EFF","#E8590C","#0FA36B","#9C36B5","#C2255C","#B08D00","#FFFFFF"];
 function stickerHTML(s,scope){
   const w=s.w||80;
-  const hh=s.h||w; /* 높이 저장값 없으면 정사각형(기존 데이터 호환) */
+  const hh=s.h||w;
   const z=s.z||1;
   let inner;
   if(s.type==="image")inner='<img src="'+esc(s.src)+'" alt="스티커">';
@@ -520,9 +578,13 @@ function stickerHTML(s,scope){
   else{
     const fs=s.fontSize||Math.max(10,Math.round(w/7));
     const ff=s.fontFamily&&s.fontFamily!=="system"?"font-family:"+s.fontFamily+";":"";
-    inner='<div class="sticker-text-inner" style="font-size:'+fs+'px;'+ff+'">'+esc(s.text)+'</div>';
+    const fw=s.bold?"font-weight:900;":"font-weight:800;";
+    const fc=s.color?"color:"+s.color+";":"";
+    /* 흰색 글자면 배경을 살짝 어둡게 */
+    const bg=s.color==="#FFFFFF"?"background:rgba(0,0,0,.45);border-color:transparent;":"";
+    inner='<div class="sticker-text-inner" style="font-size:'+fs+'px;'+ff+fw+fc+bg+'">'+esc(s.text)+'</div>';
   }
-  /* 편집 모드용 컨트롤: 레이어 앞/뒤 + (텍스트/이모지) 글자 크기 +/- */
+  /* 편집 모드 컨트롤 */
   let ctrl='<div class="sticker-ctrl">'
     +'<button onclick="event.stopPropagation();A.stickerZ(\''+scope+'\',\''+s.id+'\',1)" title="앞으로">⬆</button>'
     +'<button onclick="event.stopPropagation();A.stickerZ(\''+scope+'\',\''+s.id+'\',-1)" title="뒤로">⬇</button>';
@@ -531,13 +593,86 @@ function stickerHTML(s,scope){
       +'<button onclick="event.stopPropagation();A.stickerFont(\''+scope+'\',\''+s.id+'\',-2)" title="작게">A-</button>';
   }
   if(s.type==="text"){
-    ctrl+='<button onclick="event.stopPropagation();A.stickerFontFamily(\''+scope+'\',\''+s.id+'\')" title="폰트 변경">가</button>';
+    ctrl+='<button onclick="event.stopPropagation();A.stickerStyleOpen(\''+scope+'\',\''+s.id+'\')" title="글꼴·색상">Aa</button>'
+      +'<button onclick="event.stopPropagation();A.stickerEditText(\''+scope+'\',\''+s.id+'\')" title="내용 수정">✏️</button>';
   }
   ctrl+='</div>';
-  return'<div class="sticker-item" id="sticker-'+s.id+'" data-sid="'+s.id+'" data-scope="'+scope+'" style="left:'+(s.x||10)+'px;top:'+(s.y||10)+'px;width:'+w+'px;height:'+hh+'px;z-index:'+z+'">'+inner
+  /* 더블클릭/더블탭으로 텍스트 수정 */
+  const dbl=s.type==="text"?' ondblclick="A.stickerEditText(\''+scope+'\',\''+s.id+'\')"':'';
+  return'<div class="sticker-item" id="sticker-'+s.id+'" data-sid="'+s.id+'" data-scope="'+scope+'"'+dbl+' style="left:'+(s.x||10)+'px;top:'+(s.y||10)+'px;width:'+w+'px;height:'+hh+'px;z-index:'+z+'">'+inner
     +'<div class="resize-handle"></div>'
     +'<div class="del-handle" onclick="A.stickerDel(\''+scope+'\',\''+s.id+'\')">✕</div>'
     +ctrl+'</div>';
+}
+
+/* 폰트·스타일 선택 팝업 (3번) */
+function stickerStylePopupHTML(scope,id){
+  const arr=scope==="board"?data.boardStickers:data.screenStickers;
+  const s=arr.find(x=>x.id===id);if(!s)return"";
+  let h='<div id="style-popup-bg" onclick="if(event.target.id===\'style-popup-bg\')A.stickerStyleClose()">'
+    +'<div id="style-popup">'
+    +'<div class="row" style="margin-bottom:10px"><h2 class="card-title">글꼴 · 스타일</h2>'
+    +'<button class="chip-btn" style="margin-left:auto" onclick="A.stickerStyleClose()">닫기</button></div>';
+  /* 폰트 목록 — 각 폰트로 미리보기 */
+  h+='<div style="display:flex;flex-direction:column;gap:4px;max-height:220px;overflow-y:auto;margin-bottom:12px">';
+  for(const[val,label]of FONT_LIST){
+    const on=(s.fontFamily||"system")===val;
+    const ff=val==="system"?"":"font-family:"+val+";";
+    h+='<button onclick="A.stickerSetFont(\''+scope+'\',\''+id+'\',\''+val.replace(/'/g,"\\'")+'\')" '
+      +'style="'+ff+'text-align:left;padding:9px 12px;border-radius:9px;font-size:15px;cursor:pointer;'
+      +'border:1.5px solid '+(on?"var(--accent)":"var(--line)")+';'
+      +'background:'+(on?"var(--accent-soft)":"var(--card)")+';color:var(--ink)">'
+      +esc(label)+' — 가나다 ABC</button>';
+  }
+  h+='</div>';
+  /* 볼드 토글 */
+  h+='<div class="row" style="margin-bottom:10px"><span style="font-size:12px;font-weight:700;color:var(--sub);width:40px">굵기</span>'
+    +'<button class="chip-btn'+(s.bold?" on":"")+'" onclick="A.stickerBold(\''+scope+'\',\''+id+'\')">'
+    +(s.bold?"굵게 ✓":"굵게")+'</button></div>';
+  /* 색상 팔레트 + 자유 색상 */
+  h+='<div class="row" style="flex-wrap:wrap;gap:6px"><span style="font-size:12px;font-weight:700;color:var(--sub);width:40px">색상</span>';
+  for(const c of STICKER_COLORS){
+    const on=(s.color||"#182035")===c;
+    h+='<button onclick="A.stickerColor(\''+scope+'\',\''+id+'\',\''+c+'\')" '
+      +'style="width:26px;height:26px;border-radius:8px;cursor:pointer;background:'+c+';'
+      +'border:2.5px solid '+(on?"var(--accent)":c==="#FFFFFF"?"var(--line)":"transparent")+'"></button>';
+  }
+  h+='<input type="color" value="'+(s.color||"#182035")+'" oninput="A.stickerColor(\''+scope+'\',\''+id+'\',this.value)" title="직접 선택">';
+  h+='</div></div></div>';
+  return h;
+}
+
+/* 블록 투두 팝업 (4번) — 시간표에서 블록 선택 시 */
+function blockPopupHTML(blockId){
+  const sim=simulateAll(),plan=buildTodayPlan(sim),tm=tagMap();
+  const timed=blockTimes();
+  const b=timed.find(x=>x.id===blockId);
+  if(!b)return"";
+  const tag=b.tagId?tm[b.tagId]:null;
+  const items=plan.byBlock[blockId]||[];
+  let h='<div id="block-popup-bg" onclick="if(event.target.id===\'block-popup-bg\')A.blockPopupClose()">'
+    +'<div id="block-popup">'
+    +'<div class="row" style="margin-bottom:10px;flex-wrap:wrap">'
+    +'<span class="block-bar" style="background:'+(tag?tag.color:"var(--line)")+';height:18px"></span>'
+    +'<span style="font-weight:800;font-size:16px">'+esc(b.label)+'</span>'
+    +(tag?'<span class="tag-chip" style="background:'+tag.color+'">'+esc(tag.name)+'</span>':"")
+    +'<span style="font-size:12px;color:var(--sub)">'+fmtClock(b.start)+"–"+fmtClock(b.end)+'</span>'
+    +'<button class="chip-btn" style="margin-left:auto" onclick="A.blockPopupClose()">닫기</button></div>';
+  if(!tag){
+    h+='<p class="empty">이 블록에는 태그가 연결되어 있지 않아요.<br>계획 탭에서 태그를 연결하면 투두가 배치됩니다.</p>';
+  }else if(!items.length){
+    h+='<p class="empty">오늘 이 블록에 배치된 투두가 없어요.</p>';
+  }else{
+    h+='<div style="font-size:12px;color:var(--sub);font-weight:700;margin-bottom:6px">오늘 이 블록에서 할 일 '+items.length+'개</div>'
+      +items.map(it=>'<div class="todo'+(it.todo.done?" done":"")+'">'
+        +'<button class="check" style="'+(it.todo.done?"background:"+tag.color+";border-color:"+tag.color:"")+'" onclick="A.toggleTodo(\''+it.projectId+'\',\''+it.todo.id+'\')">'+( it.todo.done?"✓":"")+'</button>'
+        +'<div style="min-width:0;flex:1"><div class="todo-text">'+esc(it.todo.text)+'</div>'
+        +'<div class="todo-sub">'+esc(it.projName)+' · '+fmtDur(it.hours)+'</div></div></div>').join("");
+    /* 이 블록으로 뽀모도로 시작 버튼 */
+    h+='<button class="btn" style="margin-top:10px" onclick="A.blockPopupClose();A.pomoBlock(\''+blockId+'\')">▶ 이 블록으로 뽀모도로 시작</button>';
+  }
+  h+='</div></div>';
+  return h;
 }
 function renderScreenLayer(){const layer=document.getElementById("screen-layer");layer.innerHTML=data.screenStickers.filter(s=>s.tabId===ui.tab).map(s=>stickerHTML(s,"screen")).join("");}
 
@@ -664,7 +799,7 @@ function cTimetable(compact,ctx){
 }
 function tableRow(b,tm){
   const tag=b.tagId?tm[b.tagId]:null;
-  return'<div class="trow"><span class="ttime">'+fmtClock(b.start)+"–"+fmtClock(b.end)+'</span>'
+  return'<div class="trow trow-click" onclick="A.blockPopupOpen(\''+b.id+'\')"><span class="ttime">'+fmtClock(b.start)+"–"+fmtClock(b.end)+'</span>'
     +'<span class="cbar" style="background:'+(tag?tag.color:"#E1E5EC")+'"></span>'
     +'<span style="font-weight:700;font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(b.label)+'</span>'
     +(tag?'<span class="tag-chip" style="background:'+tag.color+'">'+esc(tag.name)+'</span>':"")+'</div>';
@@ -672,17 +807,19 @@ function tableRow(b,tm){
 function circleHTML(timed,tm,size){
   const cx=size/2,cy=size/2,r1=size*0.427,r0=size*0.26;
   const pol=(r,hr)=>{const a=hr/24*2*Math.PI-Math.PI/2;return[cx+r*Math.cos(a),cy+r*Math.sin(a)];};
-  const seg=(h1,h2,fill,main,sub)=>{
+  const seg=(h1,h2,fill,main,sub,bid)=>{
     if(h2-h1<=0.01)return"";const lg=h2-h1>12?1:0;
     const[x1,y1]=pol(r1,h1),[x2,y2]=pol(r1,h2),[x3,y3]=pol(r0,h2),[x4,y4]=pol(r0,h1);
     const mid=(h1+h2)/2,[lx,ly]=pol((r0+r1)/2,mid);const two=h2-h1>=2.5&&sub&&size>=260;
     let txt="";
     if(h2-h1>=1.4&&main)txt='<text x="'+lx+'" y="'+(two?ly-5:ly)+'" text-anchor="middle" dominant-baseline="middle" style="font-size:'+(size>=260?9.5:8.5)+'px;font-weight:800;fill:#fff">'+esc(main.slice(0,5))+'</text>'
       +(two?'<text x="'+lx+'" y="'+(ly+7)+'" text-anchor="middle" dominant-baseline="middle" style="font-size:8px;fill:rgba(255,255,255,.8)">'+esc(sub.slice(0,6))+'</text>':"");
-    return'<path d="M '+x1+" "+y1+" A "+r1+" "+r1+" 0 "+lg+" 1 "+x2+" "+y2+" L "+x3+" "+y3+" A "+r0+" "+r0+" 0 "+lg+" 0 "+x4+" "+y4+' Z" fill="'+fill+'" stroke="#fff" stroke-width="2"></path>'+txt;
+    return'<path d="M '+x1+" "+y1+" A "+r1+" "+r1+" 0 "+lg+" 1 "+x2+" "+y2+" L "+x3+" "+y3+" A "+r0+" "+r0+" 0 "+lg+" 0 "+x4+" "+y4+' Z" fill="'+fill+'" stroke="#fff" stroke-width="2"'+(bid?' onclick="A.blockPopupOpen(\''+bid+'\')"':'')+'></path>'+txt;
   };
   let segs="";
-  for(const b of timed){const tag=b.tagId?tm[b.tagId]:null,color=tag?tag.color:"#CBD2DE";const main=tag?tag.name:b.label,sub=tag?b.label:null;const s=((b.start%24)+24)%24,e=s+b.hours;if(e<=24)segs+=seg(s,e,color,main,sub);else{segs+=seg(s,24,color,main,sub);segs+=seg(0,e-24,color,main,sub);}}
+  for(const b of timed){const tag=b.tagId?tm[b.tagId]:null,color=tag?tag.color:"#CBD2DE";const main=tag?tag.name:b.label,sub=tag?b.label:null;const s=((b.start%24)+24)%24,e=s+b.hours;
+    if(e<=24)segs+=seg(s,e,color,main,sub,b.id);
+    else{segs+=seg(s,24,color,main,sub,b.id);segs+=seg(0,e-24,color,main,sub,b.id);}}
   const now=new Date(),nowH=now.getHours()+now.getMinutes()/60;const[nx1,ny1]=pol(r0-5,nowH),[nx2,ny2]=pol(r1+5,nowH);
   let ticks="";for(const hh of[0,6,12,18]){const[tx,ty]=pol(r1+13,hh);ticks+='<text x="'+tx+'" y="'+ty+'" text-anchor="middle" dominant-baseline="middle" style="font-size:10px;fill:var(--sub);font-weight:700">'+hh+'</text>';}
   return'<div style="display:flex;justify-content:center"><svg class="circle-svg" width="'+size+'" height="'+size+'" viewBox="0 0 '+size+" "+size+'">'
@@ -695,18 +832,15 @@ function circleHTML(timed,tm,size){
 
 /* ── 오늘의 투두 ── */
 function cTodayTodos(compact,ctx){
-  const{plan}=ctx,tm=tagMap(),timed=blockTimes();
-  const overdue=getOverdueTodos();
+  const{plan,sim}=ctx,tm=tagMap(),timed=blockTimes();
+  const behind=getBehindProjects(sim);
   let h='<div class="card-head"><h2 class="card-title">오늘의 투두</h2>'
     +'<div class="row" style="gap:4px">'
     +[["block","블록순"],["urgent","급한순"],["priority","우선순위"]].map(([k,l])=>'<button class="chip-btn'+(data.todoSort===k?" on":"")+'" onclick="A.setTodoSort(\''+k+'\')">'+l+'</button>').join("")
     +'</div></div>';
 
   const allItems=Object.values(plan.queues).flat();
-  if(!allItems.length&&!overdue.length)return h+'<p class="empty">계획 탭에서 블록에 태그를 연결하고 프로젝트를 추가하면 오늘의 투두가 자동 배치됩니다.</p>';
-  if(!allItems.length&&overdue.length){
-    /* 오늘 몫은 없고 밀린 것만 있는 경우 → 블록순 스킵하고 지난 투두란만 표시되도록 */
-  }
+  if(!allItems.length&&!behind.length)return h+'<p class="empty">계획 탭에서 블록에 태그를 연결하고 프로젝트를 추가하면 오늘의 투두가 자동 배치됩니다.</p>';
   if(data.todoSort==="block"){
     for(const b of timed){
       const items=plan.byBlock[b.id]||[];if(!b.tagId||!items.length)continue;
@@ -732,30 +866,28 @@ function cTodayTodos(compact,ctx){
     h+=show.map(it=>{const tag=tm[it.tagId];return todoRowHTML(it,tag?tag.color:"var(--sub)",compact,true,tag);}).join("");
     if(compact&&items.length>5)h+='<p class="hint">외 '+(items.length-5)+'개…</p>';
   }
-  /* ── 지난 투두란 (6번) — 마감 복구를 위해 추가로 해치워야 할 것들 ── */
-  if(overdue.length){
-    /* 프로젝트별로 그룹화해서 "복구에 필요한 개수" 표시 */
-    const byProj={};
-    overdue.forEach(it=>{
-      if(!byProj[it.projectId])byProj[it.projectId]={name:it.projName,color:it.tagColor,days:it.overdueDays,items:[],hours:it.hours};
-      byProj[it.projectId].items.push(it);
-    });
+  /* ── 지난 투두란 (5번) —
+     예정 종료일이 설정 마감일을 넘긴 프로젝트의 "따라잡기" 투두들.
+     계획된 배분 외에 이만큼 더 해내면 원래 마감일에 맞출 수 있음 ── */
+  if(behind.length){
     h+='<div style="margin-top:14px;padding-top:12px;border-top:2px dashed #FFD6DF">'
-      +'<div style="font-size:12px;font-weight:800;color:var(--danger);margin-bottom:8px">⏰ 지난 투두 — 시간 날 때 해치우면 마감이 복구돼요</div>';
-    for(const pid of Object.keys(byProj)){
-      const g=byProj[pid];
-      const showItems=compact?g.items.slice(0,2):g.items;
+      +'<div style="font-size:12px;font-weight:800;color:var(--danger);margin-bottom:3px">⏰ 지난 투두 — 마감 기한 복구용</div>'
+      +'<p style="font-size:11px;color:var(--sub);margin:0 0 8px">지금 속도로는 마감을 넘겨요. 계획 외 시간에 아래를 해치우면 원래 마감일에 맞출 수 있어요.</p>';
+    for(const g of behind){
+      const showItems=compact?g.extraTodos.slice(0,2):g.extraTodos;
+      const dChip=g.daysLeft>=0?'마감까지 D-'+g.daysLeft:'마감 '+Math.abs(g.daysLeft)+'일 초과';
       h+='<div style="background:#FFF9FA;border:1px solid #FFE3EA;border-radius:10px;padding:9px;margin-bottom:8px">'
         +'<div class="row" style="gap:6px;margin-bottom:4px;flex-wrap:wrap">'
-        +'<span style="width:8px;height:8px;border-radius:2px;background:'+g.color+';flex-shrink:0"></span>'
-        +'<span style="font-size:13px;font-weight:800">'+esc(g.name)+'</span>'
-        +'<span class="overdue-chip">마감 '+g.days+'일 초과</span>'
-        +'<span style="font-size:11px;color:var(--sub);margin-left:auto">'+g.items.length+'개 남음 · 복구엔 '+fmtDur(g.items.length*g.hours)+' 필요</span></div>'
-        +showItems.map(it=>'<div class="todo'+(it.todo.done?" done":"")+'">'
-          +'<button class="check" style="'+(it.todo.done?"background:"+g.color+";border-color:"+g.color:"")+'" onclick="A.toggleTodo(\''+it.projectId+'\',\''+it.todo.id+'\')">'+( it.todo.done?"✓":"")+'</button>'
-          +'<div style="min-width:0;flex:1"><div class="todo-text" style="font-size:13px">'+esc(it.todo.text)+'</div>'
-          +'<div class="todo-sub">'+fmtDur(it.hours)+'</div></div></div>').join("")
-        +(compact&&g.items.length>2?'<p class="hint" style="margin:2px 0 0">외 '+(g.items.length-2)+'개…</p>':"")
+        +'<span style="width:8px;height:8px;border-radius:2px;background:'+g.tagColor+';flex-shrink:0"></span>'
+        +'<span style="font-size:13px;font-weight:800">'+esc(g.projName)+'</span>'
+        +'<span class="overdue-chip">'+dChip+'</span>'
+        +(g.finish?'<span style="font-size:11px;color:var(--sub)">현재 예정 '+fmtDate(new Date(g.finish))+' 종료</span>':'<span style="font-size:11px;color:var(--danger)">현재 속도론 종료 불가</span>')
+        +'<span style="font-size:11px;color:var(--danger);font-weight:700;margin-left:auto">+'+g.extraTodos.length+'개 · '+fmtDur(g.extraHours)+' 더 필요</span></div>'
+        +showItems.map(t=>'<div class="todo'+(t.done?" done":"")+'">'
+          +'<button class="check" style="'+(t.done?"background:"+g.tagColor+";border-color:"+g.tagColor:"")+'" onclick="A.toggleTodo(\''+g.projectId+'\',\''+t.id+'\')">'+( t.done?"✓":"")+'</button>'
+          +'<div style="min-width:0;flex:1"><div class="todo-text" style="font-size:13px">'+esc(t.text)+'</div>'
+          +'<div class="todo-sub">'+fmtDur(g.hours)+'</div></div></div>').join("")
+        +(compact&&g.extraTodos.length>2?'<p class="hint" style="margin:2px 0 0">외 '+(g.extraTodos.length-2)+'개…</p>':"")
         +'</div>';
     }
     h+='</div>';
@@ -797,7 +929,7 @@ function cTagsSettings(compact){
       +'<button class="icon-btn danger" onclick="A.tagDel('+ti+')">✕</button></div>'
       +'<div class="week-grid">'+WEEK_ORDER.map(dw=>'<div><div class="d" style="color:'+(dw===0?"var(--danger)":dw===6?"var(--accent)":"var(--sub)")+'">'+DAY_NAMES[dw]+'</div><input type="number" min="0" max="24" step="0.5" value="'+(tag.weekHours[dw]??0)+'" style="font-size:12px" onchange="A.tagHours('+ti+","+dw+',this.value)"></div>').join("")+'</div></div>';
   });
-  return h+'<div class="row" style="margin-top:10px"><input id="new-tag" placeholder="새 태그 이름"><button class="btn" style="width:60px;flex-shrink:0" onclick="A.tagAdd()">추가</button></div><p class="hint">태그별 요일 시간이 그 태그 프로젝트들에 우선순위대로 분배됩니다.</p>';
+  return h+'<div class="row" style="margin-top:10px"><input id="new-tag" placeholder="새 태그 이름 (엔터로 입력)" onkeydown="if(event.key===\'Enter\')A.tagAdd()"><button class="btn" style="width:60px;flex-shrink:0" onclick="A.tagAdd()">추가</button></div><p class="hint">태그별 요일 시간이 그 태그 프로젝트들에 우선순위대로 분배됩니다.</p>';
 }
 
 /* ── 프로젝트 (3·4·5·6·7·10번 반영) ── */
@@ -892,7 +1024,7 @@ function projListHTML(sim,tm){
           +'</div></div>';
       });
       /* 단일 추가 */
-      h+='<div class="row" style="margin-top:6px"><input id="new-todo" placeholder="새 투두 추가">'
+      h+='<div class="row" style="margin-top:6px"><input id="new-todo" placeholder="새 투두 추가 (엔터로 입력)" onkeydown="if(event.key===\'Enter\')A.todoAdd(\''+p.id+'\')">'
         +'<button class="btn" style="width:50px;flex-shrink:0;padding:8px 0;font-size:12px" onclick="A.todoAdd(\''+p.id+'\')">추가</button></div>';
       /* 자동 생성 (10번) */
       h+='<details style="margin-top:8px"><summary style="font-size:12px;color:var(--accent);font-weight:700;cursor:pointer">⚡ 번호 범위로 자동 생성</summary>'
@@ -952,6 +1084,11 @@ function render(){
   main.innerHTML=tab.main.map(cid=>renderContainer(cid,false,ctx)).join("")||'<div style="font-size:12px;color:var(--sub);text-align:center;padding:14px;border:1.5px dashed var(--line);border-radius:12px">편집 모드에서 컨테이너를 추가하세요</div>';
   aux.classList.remove("droptarget");main.classList.remove("droptarget");
   renderScreenLayer();pomoPaint();paintSync();
+  /* 스타일 팝업 (3번) / 블록 투두 팝업 (4번) */
+  let popupEl=document.getElementById("popup-slot");
+  if(!popupEl){popupEl=document.createElement("div");popupEl.id="popup-slot";document.body.appendChild(popupEl);}
+  popupEl.innerHTML=(ui.stylePopup?stickerStylePopupHTML(ui.stylePopup.scope,ui.stylePopup.id):"")
+    +(ui.blockPopup?blockPopupHTML(ui.blockPopup):"");
 }
 function toolbarHTML(){
   const tab=curTab();const inTab=new Set([...tab.aux,...tab.main]);const unused=Object.keys(SECTION_LABELS).filter(c=>!inTab.has(c));
@@ -1253,17 +1390,32 @@ const A={
     const el=document.getElementById("sticker-"+id);
     if(el){const inner=el.querySelector(".sticker-emoji-inner,.sticker-text-inner");if(inner)inner.style.fontSize=s.fontSize+"px";}
     save();},
-  /* 폰트 변경 (1번) — 누를 때마다 순환 */
-  stickerFontFamily(scope,id){
+  /* 텍스트 내용 수정 — 더블클릭 또는 ✏️ (줄바꿈 지원: \n 그대로 저장됨) */
+  stickerEditText(scope,id){
     const arr=scope==="board"?data.boardStickers:data.screenStickers;
     const s=arr.find(x=>x.id===id);if(!s||s.type!=="text")return;
-    const cur=FONT_LIST.findIndex(f=>f[0]===(s.fontFamily||"system"));
-    const next=FONT_LIST[(cur+1)%FONT_LIST.length];
-    s.fontFamily=next[0];
-    const el=document.getElementById("sticker-"+id);
-    if(el){const inner=el.querySelector(".sticker-text-inner");
-      if(inner)inner.style.fontFamily=next[0]==="system"?"":next[0];}
-    save();},
+    const v=prompt("내용 수정 (줄바꿈은 \\n 입력 또는 그대로 유지됨)",s.text);
+    if(v===null)return;
+    s.text=v.replace(/\\n/g,"\n"); /* \n 입력을 실제 줄바꿈으로 */
+    save();render();},
+  /* 글꼴·스타일 팝업 (3번) */
+  stickerStyleOpen(scope,id){ui.stylePopup={scope,id};render();},
+  stickerStyleClose(){ui.stylePopup=null;render();},
+  stickerSetFont(scope,id,val){
+    const arr=scope==="board"?data.boardStickers:data.screenStickers;
+    const s=arr.find(x=>x.id===id);if(!s)return;
+    s.fontFamily=val;save();render();},
+  stickerBold(scope,id){
+    const arr=scope==="board"?data.boardStickers:data.screenStickers;
+    const s=arr.find(x=>x.id===id);if(!s)return;
+    s.bold=!s.bold;save();render();},
+  stickerColor(scope,id,c){
+    const arr=scope==="board"?data.boardStickers:data.screenStickers;
+    const s=arr.find(x=>x.id===id);if(!s)return;
+    s.color=c;save();render();},
+  /* 블록 투두 팝업 (4번) */
+  blockPopupOpen(bid){ui.blockPopup=bid;render();},
+  blockPopupClose(){ui.blockPopup=null;render();},
   /* 프로젝트 */
   pAdd(){
     const name=document.getElementById("p-name")?.value.trim();
