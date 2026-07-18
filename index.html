@@ -10,6 +10,8 @@
 <meta name="apple-mobile-web-app-title" content="블록 플래너">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Nanum+Gothic&family=Nanum+Myeongjo&family=Gaegu&family=Do+Hyeon&family=Jua&family=Gowun+Dodum&display=swap" rel="stylesheet">
 <style>
 :root{
   --bg:#F6F7F9;--card:#FFFFFF;--ink:#182035;--sub:#7B8496;
@@ -81,6 +83,13 @@ body.editing .sticker-item{cursor:grab}
 .del-handle{position:absolute;top:-8px;right:-8px;width:20px;height:20px;border-radius:50%;background:var(--danger);color:#fff;border:2px solid #fff;font-size:11px;font-weight:800;align-items:center;justify-content:center;line-height:1;touch-action:none;display:none}
 body.editing .sticker-item .resize-handle{display:block}
 body.editing .sticker-item .del-handle{display:flex}
+.sticker-ctrl{position:absolute;bottom:-30px;left:50%;transform:translateX(-50%);
+  display:none;gap:2px;background:var(--card);border:1px solid var(--line);
+  border-radius:8px;padding:2px;box-shadow:0 2px 8px rgba(0,0,0,.12);white-space:nowrap;z-index:99}
+.sticker-ctrl button{font-size:11px;font-weight:800;width:26px;height:24px;border:none;
+  background:none;color:var(--ink);border-radius:5px;cursor:pointer}
+.sticker-ctrl button:active{background:var(--accent-soft)}
+body.editing .sticker-item:hover .sticker-ctrl,body.editing .sticker-item.selected .sticker-ctrl{display:flex}
 #screen-layer{position:absolute;inset:0;pointer-events:none;z-index:5}
 #screen-layer .sticker-item{pointer-events:none}
 body.editing #screen-layer .sticker-item{pointer-events:auto}
@@ -101,7 +110,7 @@ body.editing #screen-layer .sticker-item{pointer-events:auto}
 .hint{font-size:12px;color:var(--sub);margin:8px 0 0}
 .deadline-chip{font-size:10px;font-weight:800;border-radius:6px;padding:2px 6px;white-space:nowrap}
 /* 투두 드래그 */
-.todo-drag{cursor:grab;color:var(--sub);font-size:14px;padding:0 4px;flex-shrink:0}
+.todo-drag{cursor:grab;color:var(--sub);font-size:16px;padding:4px 8px;flex-shrink:0;touch-action:none;user-select:none}
 .todo-dragging{opacity:.4}
 .todo-dragover{border-top:2px solid var(--accent)}
 nav{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--line);display:flex;justify-content:center;z-index:20}
@@ -427,7 +436,10 @@ const getClient=e=>e.touches?{x:e.touches[0].clientX,y:e.touches[0].clientY}:{x:
 document.addEventListener("mousedown",sDragStart);document.addEventListener("touchstart",sDragStart,{passive:false});
 function sDragStart(e){
   if(!ui.edit)return;const item=e.target.closest(".sticker-item");if(!item)return;
-  if(e.target.closest(".del-handle"))return;if(e.cancelable)e.preventDefault();
+  if(e.target.closest(".del-handle")||e.target.closest(".sticker-ctrl"))return;
+  if(e.cancelable)e.preventDefault();
+  document.querySelectorAll(".sticker-item.selected").forEach(el=>{if(el!==item)el.classList.remove("selected");});
+  item.classList.add("selected");
   const{x,y}=getClient(e);drag.active=true;drag.id=item.dataset.sid;drag.scope=item.dataset.scope;
   drag.type=e.target.closest(".resize-handle")?"resize":"move";
   drag.cx=x;drag.cy=y;drag.sl=parseFloat(item.style.left)||0;drag.st=parseFloat(item.style.top)||0;drag.sw=item.offsetWidth;
@@ -438,8 +450,13 @@ function sDragMove(e){
   const rect=el.parentElement.getBoundingClientRect();
   if(drag.type==="move"){el.style.left=Math.max(0,Math.min(rect.width-20,drag.sl+(x-drag.cx)))+"px";el.style.top=Math.max(0,Math.min(rect.height-20,drag.st+(y-drag.cy)))+"px";}
   else{const w=Math.max(36,drag.sw+(x-drag.cx));el.style.width=w+"px";el.style.height=w+"px";
-    const inner=el.querySelector(".sticker-emoji-inner");if(inner)inner.style.fontSize=Math.round(w*0.6)+"px";
-    const ti=el.querySelector(".sticker-text-inner");if(ti)ti.style.fontSize=Math.max(10,Math.round(w/7))+"px";}
+    /* 수동 글자 크기(fontSize)를 지정한 스티커는 리사이즈해도 글자 크기 유지 */
+    const arr=drag.scope==="board"?data.boardStickers:data.screenStickers;
+    const st=arr.find(s=>s.id===drag.id);
+    if(!st||!st.fontSize){
+      const inner=el.querySelector(".sticker-emoji-inner");if(inner)inner.style.fontSize=Math.round(w*0.6)+"px";
+      const ti=el.querySelector(".sticker-text-inner");if(ti)ti.style.fontSize=Math.max(10,Math.round(w/7))+"px";
+    }}
 }
 function sDragEnd(){
   if(!drag.active)return;drag.active=false;const el=document.getElementById("sticker-"+drag.id);if(!el)return;
@@ -449,27 +466,73 @@ function sDragEnd(){
 document.addEventListener("mousemove",sDragMove);document.addEventListener("touchmove",sDragMove,{passive:false});
 document.addEventListener("mouseup",sDragEnd);document.addEventListener("touchend",sDragEnd);
 
-/* ── 투두 드래그 정렬 (4번) ── */
-let todoDrag={pid:null,fromIdx:null};
-function todoRowDragStart(e,pid,idx){e.dataTransfer.effectAllowed="move";todoDrag={pid,fromIdx:idx};e.currentTarget.closest(".todo-item").classList.add("todo-dragging");}
-function todoRowDragOver(e,pid,idx){e.preventDefault();if(todoDrag.pid!==pid)return;document.querySelectorAll(".todo-item").forEach(el=>el.classList.remove("todo-dragover"));e.currentTarget.closest(".todo-item")?.classList.add("todo-dragover");}
-function todoRowDrop(e,pid,idx){
-  e.preventDefault();document.querySelectorAll(".todo-item,.todo-dragging").forEach(el=>{el.classList.remove("todo-dragover");el.classList.remove("todo-dragging");});
-  if(todoDrag.pid!==pid||todoDrag.fromIdx===idx)return;
-  const p=data.projects.find(x=>x.id===pid);if(!p)return;
+/* ── 투두 드래그 정렬 — 마우스+터치 통합 (⠿ 핸들 포인터 방식) ── */
+const tDrag={active:false,pid:null,fromIdx:null};
+function tDragStart(e,pid,idx){
+  if(e.cancelable)e.preventDefault();
+  e.stopPropagation();
+  tDrag.active=true;tDrag.pid=pid;tDrag.fromIdx=idx;
+  const item=e.target.closest(".todo-item");
+  if(item)item.classList.add("todo-dragging");
+}
+function tDragMove(e){
+  if(!tDrag.active)return;
+  if(e.cancelable)e.preventDefault();
+  const{x,y}=getClient(e);
+  const el=document.elementFromPoint(x,y);
+  const item=el?el.closest(".todo-item"):null;
+  document.querySelectorAll(".todo-item").forEach(t=>t.classList.remove("todo-dragover"));
+  if(item&&item.dataset.tpid===tDrag.pid)item.classList.add("todo-dragover");
+}
+function tDragEnd(e){
+  if(!tDrag.active)return;
+  const pt=e.changedTouches?{x:e.changedTouches[0].clientX,y:e.changedTouches[0].clientY}:{x:e.clientX,y:e.clientY};
+  const el=document.elementFromPoint(pt.x,pt.y);
+  const item=el?el.closest(".todo-item"):null;
+  document.querySelectorAll(".todo-item").forEach(t=>{t.classList.remove("todo-dragover");t.classList.remove("todo-dragging");});
+  const wasActive=tDrag.active;tDrag.active=false;
+  if(!wasActive||!item||item.dataset.tpid!==tDrag.pid)return;
+  const toIdx=parseInt(item.dataset.tidx);
+  if(isNaN(toIdx)||toIdx===tDrag.fromIdx)return;
+  const p=data.projects.find(x=>x.id===tDrag.pid);if(!p)return;
   const todos=[...p.todos].sort((a,b)=>(a.order??0)-(b.order??0));
-  const [moved]=todos.splice(todoDrag.fromIdx,1);todos.splice(idx,0,moved);
+  const [moved]=todos.splice(tDrag.fromIdx,1);todos.splice(toIdx,0,moved);
   todos.forEach((t,i)=>t.order=i);save();render();
 }
+document.addEventListener("mousemove",tDragMove);
+document.addEventListener("touchmove",tDragMove,{passive:false});
+document.addEventListener("mouseup",tDragEnd);
+document.addEventListener("touchend",tDragEnd);
 
 /* ── 스티커 HTML ── */
+const FONT_LIST=[["system","기본"],["'Nanum Gothic',sans-serif","나눔고딕"],["'Nanum Myeongjo',serif","나눔명조"],["'Gaegu',cursive","개구"],["'Do Hyeon',sans-serif","도현"],["'Jua',sans-serif","주아"],["'Gowun Dodum',sans-serif","고운돋움"],["monospace","고정폭"]];
 function stickerHTML(s,scope){
   const w=s.w||80;
+  const z=s.z||1;
   let inner;
   if(s.type==="image")inner='<img src="'+esc(s.src)+'" alt="스티커">';
-  else if(s.type==="emoji")inner='<div class="sticker-emoji-inner" style="font-size:'+Math.round(w*0.6)+'px">'+esc(s.emoji)+'</div>';
-  else inner='<div class="sticker-text-inner" style="font-size:'+Math.max(10,Math.round(w/7))+'px">'+esc(s.text)+'</div>';
-  return'<div class="sticker-item" id="sticker-'+s.id+'" data-sid="'+s.id+'" data-scope="'+scope+'" style="left:'+(s.x||10)+'px;top:'+(s.y||10)+'px;width:'+w+'px;height:'+w+'px">'+inner+'<div class="resize-handle"></div><div class="del-handle" onclick="A.stickerDel(\''+scope+'\',\''+s.id+'\')">✕</div></div>';
+  else if(s.type==="emoji")inner='<div class="sticker-emoji-inner" style="font-size:'+(s.fontSize||Math.round(w*0.6))+'px">'+esc(s.emoji)+'</div>';
+  else{
+    const fs=s.fontSize||Math.max(10,Math.round(w/7));
+    const ff=s.fontFamily&&s.fontFamily!=="system"?"font-family:"+s.fontFamily+";":"";
+    inner='<div class="sticker-text-inner" style="font-size:'+fs+'px;'+ff+'">'+esc(s.text)+'</div>';
+  }
+  /* 편집 모드용 컨트롤: 레이어 앞/뒤 + (텍스트/이모지) 글자 크기 +/- */
+  let ctrl='<div class="sticker-ctrl">'
+    +'<button onclick="event.stopPropagation();A.stickerZ(\''+scope+'\',\''+s.id+'\',1)" title="앞으로">⬆</button>'
+    +'<button onclick="event.stopPropagation();A.stickerZ(\''+scope+'\',\''+s.id+'\',-1)" title="뒤로">⬇</button>';
+  if(s.type!=="image"){
+    ctrl+='<button onclick="event.stopPropagation();A.stickerFont(\''+scope+'\',\''+s.id+'\',2)" title="크게">A+</button>'
+      +'<button onclick="event.stopPropagation();A.stickerFont(\''+scope+'\',\''+s.id+'\',-2)" title="작게">A-</button>';
+  }
+  if(s.type==="text"){
+    ctrl+='<button onclick="event.stopPropagation();A.stickerFontFamily(\''+scope+'\',\''+s.id+'\')" title="폰트 변경">가</button>';
+  }
+  ctrl+='</div>';
+  return'<div class="sticker-item" id="sticker-'+s.id+'" data-sid="'+s.id+'" data-scope="'+scope+'" style="left:'+(s.x||10)+'px;top:'+(s.y||10)+'px;width:'+w+'px;height:'+w+'px;z-index:'+z+'">'+inner
+    +'<div class="resize-handle"></div>'
+    +'<div class="del-handle" onclick="A.stickerDel(\''+scope+'\',\''+s.id+'\')">✕</div>'
+    +ctrl+'</div>';
 }
 function renderScreenLayer(){const layer=document.getElementById("screen-layer");layer.innerHTML=data.screenStickers.filter(s=>s.tabId===ui.tab).map(s=>stickerHTML(s,"screen")).join("");}
 
@@ -535,13 +598,30 @@ function cPomo(compact){
     +'<label class="numfield">휴식(분)<input type="number" min="1" max="60" value="'+data.pomodoro.rest+'" onchange="A.pomoSetRest(this.value)"></label>'
     +'<button class="icon-btn" style="width:auto;padding:0 8px;height:36px;font-size:11px;font-weight:700" onclick="A.pomoSwitch()">전환</button>'
     +'<button class="icon-btn" style="width:auto;padding:0 8px;height:36px;font-size:11px;font-weight:700" onclick="A.pomoUnlink()">해제</button></div>';
-  /* 주간 차트 */
-  h+='<div style="width:100%"><div style="font-size:11px;color:var(--sub);font-weight:700;margin-bottom:4px">최근 7일</div>'
+  /* 주간 뽀모도로 차트 */
+  h+='<div style="width:100%"><div style="font-size:11px;color:var(--sub);font-weight:700;margin-bottom:4px">🍅 뽀모도로 · 최근 7일</div>'
     +'<div class="pomo-chart">'
     +weekData.map(w=>'<div class="pomo-bar-wrap">'
       +'<div style="font-size:10px;color:'+(w.count>0?'var(--accent)':'var(--sub)')+';font-weight:800;margin-bottom:2px">'+(w.count>0?w.count:"")+'</div>'
       +'<div class="pomo-bar" style="height:'+Math.max(3,Math.round(w.count/maxC*48))+'px;background:'+(w.isToday?'var(--accent)':'#C5CCE8')+'"></div>'
       +'<div class="pomo-bar-label" style="color:'+(w.isToday?'var(--accent)':'var(--sub)')+'">'+w.label+'</div>'
+      +'</div>').join("")
+    +'</div></div>';
+  /* 주간 완료 투두 차트 (3번) — todo.doneAt 기준 집계 */
+  const todoWeek=Array.from({length:7},(_,i)=>{
+    const d=new Date(today);d.setDate(d.getDate()-6+i);
+    const key=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+    let count=0;
+    for(const p of data.projects)for(const t of p.todos)if(t.done&&t.doneAt===key)count++;
+    return{label:DAY_NAMES[d.getDay()],count,isToday:key===todayKey()};
+  });
+  const maxT=Math.max(1,...todoWeek.map(w=>w.count));
+  h+='<div style="width:100%;margin-top:6px"><div style="font-size:11px;color:var(--sub);font-weight:700;margin-bottom:4px">✓ 완료한 투두 · 최근 7일</div>'
+    +'<div class="pomo-chart">'
+    +todoWeek.map(w=>'<div class="pomo-bar-wrap">'
+      +'<div style="font-size:10px;color:'+(w.count>0?'var(--good)':'var(--sub)')+';font-weight:800;margin-bottom:2px">'+(w.count>0?w.count:"")+'</div>'
+      +'<div class="pomo-bar" style="height:'+Math.max(3,Math.round(w.count/maxT*48))+'px;background:'+(w.isToday?'var(--good)':'#BFE3D2')+'"></div>'
+      +'<div class="pomo-bar-label" style="color:'+(w.isToday?'var(--good)':'var(--sub)')+'">'+w.label+'</div>'
       +'</div>').join("")
     +'</div></div>';
   return h+'</div>';
@@ -616,19 +696,12 @@ function cTodayTodos(compact,ctx){
     +'<div class="row" style="gap:4px">'
     +[["block","블록순"],["urgent","급한순"],["priority","우선순위"]].map(([k,l])=>'<button class="chip-btn'+(data.todoSort===k?" on":"")+'" onclick="A.setTodoSort(\''+k+'\')">'+l+'</button>').join("")
     +'</div></div>';
-  /* 밀린 투두 표시 (8번) */
-  if(overdue.length){
-    h+='<div style="background:#FFF5F7;border:1px solid #FFD6DF;border-radius:10px;padding:10px;margin-bottom:10px">'
-      +'<div style="font-size:12px;font-weight:800;color:var(--danger);margin-bottom:6px">⚠ 밀린 할 일 — 오늘 우선 처리 필요</div>'
-      +overdue.slice(0,compact?2:overdue.length).map(it=>'<div class="todo'+(it.todo.done?" done":"")+'">'
-        +'<button class="check" style="'+(it.todo.done?"background:"+it.tagColor+";border-color:"+it.tagColor:"")+'" onclick="A.toggleTodo(\''+it.projectId+'\',\''+it.todo.id+'\')">'+( it.todo.done?"✓":"")+'</button>'
-        +'<div style="min-width:0;flex:1"><div class="todo-text">'+esc(it.todo.text)+'</div>'
-        +'<div class="todo-sub">'+esc(it.projName)+' · <span class="overdue-chip">'+it.overdueDays+'일 초과</span></div></div></div>').join("")
-      +(compact&&overdue.length>2?'<p class="hint" style="margin:4px 0 0">외 '+(overdue.length-2)+'개…</p>':"")
-      +'</div>';
-  }
+
   const allItems=Object.values(plan.queues).flat();
   if(!allItems.length&&!overdue.length)return h+'<p class="empty">계획 탭에서 블록에 태그를 연결하고 프로젝트를 추가하면 오늘의 투두가 자동 배치됩니다.</p>';
+  if(!allItems.length&&overdue.length){
+    /* 오늘 몫은 없고 밀린 것만 있는 경우 → 블록순 스킵하고 지난 투두란만 표시되도록 */
+  }
   if(data.todoSort==="block"){
     for(const b of timed){
       const items=plan.byBlock[b.id]||[];if(!b.tagId||!items.length)continue;
@@ -653,6 +726,34 @@ function cTodayTodos(compact,ctx){
     const show=compact?items.slice(0,5):items;
     h+=show.map(it=>{const tag=tm[it.tagId];return todoRowHTML(it,tag?tag.color:"var(--sub)",compact,true,tag);}).join("");
     if(compact&&items.length>5)h+='<p class="hint">외 '+(items.length-5)+'개…</p>';
+  }
+  /* ── 지난 투두란 (6번) — 마감 복구를 위해 추가로 해치워야 할 것들 ── */
+  if(overdue.length){
+    /* 프로젝트별로 그룹화해서 "복구에 필요한 개수" 표시 */
+    const byProj={};
+    overdue.forEach(it=>{
+      if(!byProj[it.projectId])byProj[it.projectId]={name:it.projName,color:it.tagColor,days:it.overdueDays,items:[],hours:it.hours};
+      byProj[it.projectId].items.push(it);
+    });
+    h+='<div style="margin-top:14px;padding-top:12px;border-top:2px dashed #FFD6DF">'
+      +'<div style="font-size:12px;font-weight:800;color:var(--danger);margin-bottom:8px">⏰ 지난 투두 — 시간 날 때 해치우면 마감이 복구돼요</div>';
+    for(const pid of Object.keys(byProj)){
+      const g=byProj[pid];
+      const showItems=compact?g.items.slice(0,2):g.items;
+      h+='<div style="background:#FFF9FA;border:1px solid #FFE3EA;border-radius:10px;padding:9px;margin-bottom:8px">'
+        +'<div class="row" style="gap:6px;margin-bottom:4px;flex-wrap:wrap">'
+        +'<span style="width:8px;height:8px;border-radius:2px;background:'+g.color+';flex-shrink:0"></span>'
+        +'<span style="font-size:13px;font-weight:800">'+esc(g.name)+'</span>'
+        +'<span class="overdue-chip">마감 '+g.days+'일 초과</span>'
+        +'<span style="font-size:11px;color:var(--sub);margin-left:auto">'+g.items.length+'개 남음 · 복구엔 '+fmtDur(g.items.length*g.hours)+' 필요</span></div>'
+        +showItems.map(it=>'<div class="todo'+(it.todo.done?" done":"")+'">'
+          +'<button class="check" style="'+(it.todo.done?"background:"+g.color+";border-color:"+g.color:"")+'" onclick="A.toggleTodo(\''+it.projectId+'\',\''+it.todo.id+'\')">'+( it.todo.done?"✓":"")+'</button>'
+          +'<div style="min-width:0;flex:1"><div class="todo-text" style="font-size:13px">'+esc(it.todo.text)+'</div>'
+          +'<div class="todo-sub">'+fmtDur(it.hours)+'</div></div></div>').join("")
+        +(compact&&g.items.length>2?'<p class="hint" style="margin:2px 0 0">외 '+(g.items.length-2)+'개…</p>':"")
+        +'</div>';
+    }
+    h+='</div>';
   }
   return h;
 }
@@ -723,7 +824,11 @@ function cProjects(compact,ctx){
 }
 
 function projListHTML(sim,tm){
-  const sorted=[...data.projects].sort((a,b)=>a.priority-b.priority);
+  /* 완료 프로젝트는 자동으로 맨 하단 (4번) */
+  const sorted=[...data.projects].sort((a,b)=>{
+    const da=isProjDone(a)?1:0, db=isProjDone(b)?1:0;
+    return da-db || a.priority-b.priority;
+  });
   if(!sorted.length)return'<p class="empty">아직 프로젝트가 없습니다.</p>';
   let h="";
   sorted.forEach((p,i)=>{
@@ -771,12 +876,11 @@ function projListHTML(sim,tm){
       const sortedTodos=[...p.todos].sort((a,b)=>(a.order??0)-(b.order??0));
       h+='<div style="margin-left:23px;margin-top:8px;background:#FAFBFD;border:1px solid var(--line);border-radius:12px;padding:9px">';
       sortedTodos.forEach((t,ti)=>{
-        h+='<div class="todo-item'+(t.done?" done":"")+'" draggable="true" '
-          +'ondragstart="todoRowDragStart(event,\''+p.id+'\','+ti+')" '
-          +'ondragover="todoRowDragOver(event,\''+p.id+'\','+ti+')" '
-          +'ondrop="todoRowDrop(event,\''+p.id+'\','+ti+')">'
+        h+='<div class="todo-item'+(t.done?" done":"")+'" data-tpid="'+p.id+'" data-tidx="'+ti+'">'
           +'<div class="row" style="gap:6px;padding:5px 0">'
-          +'<span class="todo-drag" title="드래그로 순서 변경">⠿</span>'
+          +'<span class="todo-drag" title="드래그로 순서 변경" '
+          +'onmousedown="tDragStart(event,\''+p.id+'\','+ti+')" '
+          +'ontouchstart="tDragStart(event,\''+p.id+'\','+ti+')">⠿</span>'
           +'<button class="check" style="width:21px;height:21px;'+(t.done?"background:"+(tag?tag.color:"#888")+";border-color:"+(tag?tag.color:"#888"):"")+'" onclick="A.toggleTodo(\''+p.id+'\',\''+t.id+'\')">'+( t.done?"✓":"")+'</button>'
           +'<input value="'+esc(t.text)+'" style="padding:6px 9px;font-size:13px;'+(t.done?"text-decoration:line-through;color:var(--sub)":"")+'" onchange="A.todoText(\''+p.id+'\',\''+t.id+'\',this.value)">'
           +'<button class="icon-btn danger" style="width:24px;height:24px;font-size:11px" onclick="A.todoDel(\''+p.id+'\',\''+t.id+'\')">✕</button>'
@@ -810,7 +914,10 @@ function projBoardHTML(sim,tm){
   if(!data.projects.length)return'<p class="empty">아직 프로젝트가 없습니다.</p>';
   let h='<div class="dash">';
   for(const tag of data.tags){
-    const projs=data.projects.filter(p=>p.tagId===tag.id).sort((a,b)=>a.priority-b.priority);if(!projs.length)continue;
+    const projs=data.projects.filter(p=>p.tagId===tag.id).sort((a,b)=>{
+      const da=isProjDone(a)?1:0, db=isProjDone(b)?1:0;
+      return da-db || a.priority-b.priority;
+    });if(!projs.length)continue;
     h+='<div class="dash-col"><div class="dash-col-head" style="background:'+tag.color+'">'+esc(tag.name)+'<span style="margin-left:auto;font-size:11px;opacity:.85">'+projs.length+'</span></div>';
     for(const p of projs){
       const doneCnt=p.todos.filter(t=>t.done).length,pct=p.todos.length?Math.round(doneCnt/p.todos.length*100):0;
@@ -1124,6 +1231,34 @@ const A={
   screenPrompt(type){const v=prompt(type==="emoji"?"이모지 입력":"텍스트 입력");if(!v||!v.trim())return;data.screenStickers.push(type==="emoji"?{id:uid(),tabId:ui.tab,type:"emoji",emoji:v.trim(),x:40,y:120,w:70}:{id:uid(),tabId:ui.tab,type:"text",text:v.trim(),x:40,y:120,w:120});save();render();},
   screenFile(input){fileToSticker(input,src=>{data.screenStickers.push({id:uid(),tabId:ui.tab,type:"image",src,x:40,y:120,w:100});save();render();});},
   stickerDel(scope,id){if(scope==="board")data.boardStickers=data.boardStickers.filter(s=>s.id!==id);else data.screenStickers=data.screenStickers.filter(s=>s.id!==id);save();render();},
+  /* 레이어 앞뒤 조절 (5번) */
+  stickerZ(scope,id,dir){
+    const arr=scope==="board"?data.boardStickers:data.screenStickers;
+    const s=arr.find(x=>x.id===id);if(!s)return;
+    s.z=Math.max(1,Math.min(50,(s.z||1)+dir));
+    const el=document.getElementById("sticker-"+id);
+    if(el)el.style.zIndex=s.z;
+    save();},
+  /* 글자 크기 조절 (1번) */
+  stickerFont(scope,id,delta){
+    const arr=scope==="board"?data.boardStickers:data.screenStickers;
+    const s=arr.find(x=>x.id===id);if(!s||s.type==="image")return;
+    const cur=s.fontSize||(s.type==="emoji"?Math.round((s.w||80)*0.6):Math.max(10,Math.round((s.w||80)/7)));
+    s.fontSize=Math.max(8,Math.min(120,cur+delta));
+    const el=document.getElementById("sticker-"+id);
+    if(el){const inner=el.querySelector(".sticker-emoji-inner,.sticker-text-inner");if(inner)inner.style.fontSize=s.fontSize+"px";}
+    save();},
+  /* 폰트 변경 (1번) — 누를 때마다 순환 */
+  stickerFontFamily(scope,id){
+    const arr=scope==="board"?data.boardStickers:data.screenStickers;
+    const s=arr.find(x=>x.id===id);if(!s||s.type!=="text")return;
+    const cur=FONT_LIST.findIndex(f=>f[0]===(s.fontFamily||"system"));
+    const next=FONT_LIST[(cur+1)%FONT_LIST.length];
+    s.fontFamily=next[0];
+    const el=document.getElementById("sticker-"+id);
+    if(el){const inner=el.querySelector(".sticker-text-inner");
+      if(inner)inner.style.fontFamily=next[0]==="system"?"":next[0];}
+    save();},
   /* 프로젝트 */
   pAdd(){
     const name=document.getElementById("p-name")?.value.trim();
@@ -1210,7 +1345,7 @@ const A={
   exportData(){const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="block-planner-"+todayKey()+".json";a.click();URL.revokeObjectURL(a.href);},
   importData(input){const f=input.files&&input.files[0];if(!f)return;const rd=new FileReader();rd.onload=()=>{try{data=migrate(JSON.parse(rd.result));applyTheme();save();render();alert("백업을 불러왔어요!");}catch{alert("파일을 읽을 수 없어요.");}};rd.readAsText(f);input.value="";}
 };
-window.A=A;window.todoRowDragStart=todoRowDragStart;window.todoRowDragOver=todoRowDragOver;window.todoRowDrop=todoRowDrop;
+window.A=A;window.tDragStart=tDragStart;
 
 /* ── 시작 ── */
 (async function init(){
