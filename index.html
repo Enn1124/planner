@@ -442,26 +442,30 @@ function sDragStart(e){
   item.classList.add("selected");
   const{x,y}=getClient(e);drag.active=true;drag.id=item.dataset.sid;drag.scope=item.dataset.scope;
   drag.type=e.target.closest(".resize-handle")?"resize":"move";
-  drag.cx=x;drag.cy=y;drag.sl=parseFloat(item.style.left)||0;drag.st=parseFloat(item.style.top)||0;drag.sw=item.offsetWidth;
+  drag.cx=x;drag.cy=y;drag.sl=parseFloat(item.style.left)||0;drag.st=parseFloat(item.style.top)||0;drag.sw=item.offsetWidth;drag.sh=item.offsetHeight;
 }
 function sDragMove(e){
   if(!drag.active)return;if(e.cancelable)e.preventDefault();
   const{x,y}=getClient(e);const el=document.getElementById("sticker-"+drag.id);if(!el)return;
   const rect=el.parentElement.getBoundingClientRect();
   if(drag.type==="move"){el.style.left=Math.max(0,Math.min(rect.width-20,drag.sl+(x-drag.cx)))+"px";el.style.top=Math.max(0,Math.min(rect.height-20,drag.st+(y-drag.cy)))+"px";}
-  else{const w=Math.max(36,drag.sw+(x-drag.cx));el.style.width=w+"px";el.style.height=w+"px";
+  else{
+    /* 가로/세로 자유 조절 — 비율 고정 없음 */
+    const w=Math.max(36,drag.sw+(x-drag.cx));
+    const hh=Math.max(28,drag.sh+(y-drag.cy));
+    el.style.width=w+"px";el.style.height=hh+"px";
     /* 수동 글자 크기(fontSize)를 지정한 스티커는 리사이즈해도 글자 크기 유지 */
     const arr=drag.scope==="board"?data.boardStickers:data.screenStickers;
     const st=arr.find(s=>s.id===drag.id);
     if(!st||!st.fontSize){
-      const inner=el.querySelector(".sticker-emoji-inner");if(inner)inner.style.fontSize=Math.round(w*0.6)+"px";
-      const ti=el.querySelector(".sticker-text-inner");if(ti)ti.style.fontSize=Math.max(10,Math.round(w/7))+"px";
+      const inner=el.querySelector(".sticker-emoji-inner");if(inner)inner.style.fontSize=Math.round(Math.min(w,hh)*0.6)+"px";
+      const ti=el.querySelector(".sticker-text-inner");if(ti)ti.style.fontSize=Math.max(10,Math.round(Math.min(w,hh)/7))+"px";
     }}
 }
 function sDragEnd(){
   if(!drag.active)return;drag.active=false;const el=document.getElementById("sticker-"+drag.id);if(!el)return;
   const arr=drag.scope==="board"?data.boardStickers:data.screenStickers;
-  const s=arr.find(s=>s.id===drag.id);if(s){s.x=parseFloat(el.style.left)||0;s.y=parseFloat(el.style.top)||0;s.w=el.offsetWidth;save();}
+  const s=arr.find(s=>s.id===drag.id);if(s){s.x=parseFloat(el.style.left)||0;s.y=parseFloat(el.style.top)||0;s.w=el.offsetWidth;s.h=el.offsetHeight;save();}
 }
 document.addEventListener("mousemove",sDragMove);document.addEventListener("touchmove",sDragMove,{passive:false});
 document.addEventListener("mouseup",sDragEnd);document.addEventListener("touchend",sDragEnd);
@@ -508,6 +512,7 @@ document.addEventListener("touchend",tDragEnd);
 const FONT_LIST=[["system","기본"],["'Nanum Gothic',sans-serif","나눔고딕"],["'Nanum Myeongjo',serif","나눔명조"],["'Gaegu',cursive","개구"],["'Do Hyeon',sans-serif","도현"],["'Jua',sans-serif","주아"],["'Gowun Dodum',sans-serif","고운돋움"],["monospace","고정폭"]];
 function stickerHTML(s,scope){
   const w=s.w||80;
+  const hh=s.h||w; /* 높이 저장값 없으면 정사각형(기존 데이터 호환) */
   const z=s.z||1;
   let inner;
   if(s.type==="image")inner='<img src="'+esc(s.src)+'" alt="스티커">';
@@ -529,7 +534,7 @@ function stickerHTML(s,scope){
     ctrl+='<button onclick="event.stopPropagation();A.stickerFontFamily(\''+scope+'\',\''+s.id+'\')" title="폰트 변경">가</button>';
   }
   ctrl+='</div>';
-  return'<div class="sticker-item" id="sticker-'+s.id+'" data-sid="'+s.id+'" data-scope="'+scope+'" style="left:'+(s.x||10)+'px;top:'+(s.y||10)+'px;width:'+w+'px;height:'+w+'px;z-index:'+z+'">'+inner
+  return'<div class="sticker-item" id="sticker-'+s.id+'" data-sid="'+s.id+'" data-scope="'+scope+'" style="left:'+(s.x||10)+'px;top:'+(s.y||10)+'px;width:'+w+'px;height:'+hh+'px;z-index:'+z+'">'+inner
     +'<div class="resize-handle"></div>'
     +'<div class="del-handle" onclick="A.stickerDel(\''+scope+'\',\''+s.id+'\')">✕</div>'
     +ctrl+'</div>';
