@@ -124,6 +124,7 @@ body.editing #screen-layer .sticker-item{pointer-events:auto}
 .todo-drag{cursor:grab;color:var(--sub);font-size:16px;padding:4px 8px;flex-shrink:0;touch-action:none;user-select:none}
 .todo-dragging{opacity:.4}
 .todo-dragover{border-top:2px solid var(--accent)}
+.todo-item.chained{border-left:3px solid var(--accent);margin-left:6px;padding-left:4px;border-radius:2px}
 nav{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--line);display:flex;justify-content:center;z-index:20}
 nav .inner{display:flex;width:100%;max-width:980px;overflow-x:auto}
 nav button{flex:1;min-width:80px;padding:13px 6px;border:none;background:none;font-size:14px;font-weight:500;color:var(--sub);border-top:2px solid transparent;white-space:nowrap}
@@ -394,7 +395,9 @@ function buildTodayPlan(sim){
       /* 오늘 이미 완료한 것도 포함 (체크 취소 가능하게) */
       const doneTodayPool=p.todos.filter(t=>t.done&&t.doneAt===tk).sort((a,b)=>(a.order??0)-(b.order??0));
       const fullPool=[...doneTodayPool,...pool];
-      const cnt=Math.min(Math.ceil(allocH/p.hoursPerTodo-1e-9),fullPool.length);
+      let cnt=Math.min(Math.ceil(allocH/p.hoursPerTodo-1e-9),fullPool.length);
+      /* 파트(묶음) 고려 (5번): 다음 투두가 사슬로 이어져 있으면 함께 포함 */
+      while(cnt>0&&cnt<fullPool.length&&fullPool[cnt].chain)cnt++;
       for(let i=0;i<cnt;i++)q.push({todo:fullPool[i],projectId:p.id,projName:p.name,
         hours:p.hoursPerTodo,tagId:tag.id,priority:p.priority,deadline:p.deadline});
     }
@@ -412,15 +415,27 @@ function buildTodayPlan(sim){
       unplaced[tag.id].push(...items);
       continue;
     }
-    let idx=0;
+    /* 묶음(파트) 단위로 그룹화 — chain으로 이어진 투두는 같은 블록에 (5번) */
+    const groups=[];
+    for(const it of items){
+      if(it.todo.chain&&groups.length)groups[groups.length-1].push(it);
+      else groups.push([it]);
+    }
+    let gIdx=0;
     for(const b of tagBlocks){
       let cap=b.hours;
-      while(idx<items.length&&items[idx].hours<=cap+1e-9){
-        byBlock[b.id].push(items[idx]);cap-=items[idx].hours;idx++;
+      while(gIdx<groups.length){
+        const g=groups[gIdx];
+        const gHours=g.reduce((s,it)=>s+it.hours,0);
+        if(gHours<=cap+1e-9){
+          g.forEach(it=>byBlock[b.id].push(it));cap-=gHours;gIdx++;
+        }else break;
       }
     }
-    /* 블록 용량 초과분은 마지막 블록에 추가 */
-    while(idx<items.length)byBlock[tagBlocks[tagBlocks.length-1].id].push(items[idx++]);
+    /* 남은 묶음은 마지막 블록에 통째로 */
+    while(gIdx<groups.length){
+      groups[gIdx].forEach(it=>byBlock[tagBlocks[tagBlocks.length-1].id].push(it));gIdx++;
+    }
   }
   return{byBlock,unplaced,queues};
 }
@@ -439,19 +454,28 @@ function calcMinDailyHours(p,sim){
 }
 
 /* ── 뽀모도로 ── */
-const pomo={phase:"work",running:false,leftMs:null,endAt:null,cycles:0,blockId:null,iv:null};
+const pomo={phase:"work",running:false,leftMs:null,endAt:null,cycles:0,blockId:null,todo:null,iv:null};
 function pomoDur(ph){return(ph==="work"?data.pomodoro.work:data.pomodoro.rest)*60000;}
 function pomoTick(){
   if(!pomo.running)return;
   let l=pomo.endAt-Date.now();
   if(l<=0){
     if(pomo.phase==="work"){pomo.cycles++;
+      let dirty=false;
       if(pomo.blockId){const tk=todayKey();if(!data.pomoLog[tk])data.pomoLog[tk]={};
-        data.pomoLog[tk][pomo.blockId]=(data.pomoLog[tk][pomo.blockId]||0)+1;
-        /* 직접 저장 (save() 순환 방지) */
-        store.set("planner-state",JSON.stringify(data));
+        data.pomoLog[tk][pomo.blockId]=(data.pomoLog[tk][pomo.blockId]||0)+1;dirty=true;
         const cEl=document.getElementById("pomocount-"+pomo.blockId);
         if(cEl)cEl.textContent="🍅 "+pomoCountToday(pomo.blockId);}
+      /* 투두 연동: 해당 투두에 🍅 누적 (4번) */
+      if(pomo.todo){
+        const p=data.projects.find(x=>x.id===pomo.todo.pid);
+        const t=p?p.todos.find(x=>x.id===pomo.todo.tid):null;
+        if(t){t.pomos=(t.pomos||0)+1;dirty=true;
+          /* 전체 뽀모도로 통계에도 반영 (블록 미연동 시) */
+          if(!pomo.blockId){const tk=todayKey();if(!data.pomoLog[tk])data.pomoLog[tk]={};
+            data.pomoLog[tk]["_todo"]=(data.pomoLog[tk]["_todo"]||0)+1;}}
+      }
+      if(dirty)store.set("planner-state",JSON.stringify(data));
       pomo.phase="rest";
     }else pomo.phase="work";
     pomo.leftMs=pomoDur(pomo.phase);pomo.endAt=Date.now()+pomo.leftMs;
@@ -470,7 +494,10 @@ function pomoPaint(){
   ring.style.stroke=pomo.phase==="work"?data.theme.accent:"#0FA36B";
   const sb=document.getElementById("pomo-startbtn");sb.textContent=pomo.running?"일시정지":"시작";sb.style.background=pomo.running?"var(--danger)":color;
   const cy=document.getElementById("pomo-cycles");if(cy)cy.textContent="완료 "+pomo.cycles+"회";
-  const bl=document.getElementById("pomo-block-label");if(pomo.blockId){const b=data.blocks.find(x=>x.id===pomo.blockId);bl.textContent=b?"▸ "+b.label:"";}else bl.textContent="";
+  const bl=document.getElementById("pomo-block-label");
+  if(pomo.todo){bl.textContent="▸ "+(pomo.todo.text||"투두");}
+  else if(pomo.blockId){const b=data.blocks.find(x=>x.id===pomo.blockId);bl.textContent=b?"▸ "+b.label:"";}
+  else bl.textContent="";
 }
 function pomoStart(){if(pomo.leftMs==null)pomo.leftMs=pomoDur(pomo.phase);pomo.endAt=Date.now()+pomo.leftMs;pomo.running=true;if(!pomo.iv)pomo.iv=setInterval(pomoTick,250);pomoPaint();}
 function pomoPause(){pomo.running=false;pomoPaint();}
@@ -674,6 +701,100 @@ function blockPopupHTML(blockId){
   h+='</div></div>';
   return h;
 }
+
+/* 텍스트 스티커 편집 팝업 (1번 — 여러 줄 입력·줄바꿈 지원) */
+function textEditPopupHTML(){
+  const te=ui.textEdit;if(!te)return"";
+  let cur="";
+  if(!te.isNew){
+    const arr=te.scope==="board"?data.boardStickers:data.screenStickers;
+    const s=arr.find(x=>x.id===te.id);
+    cur=s?s.text:"";
+  }
+  return'<div id="style-popup-bg" onclick="if(event.target.id===\'style-popup-bg\')A.stickerTextCancel()">'
+    +'<div id="style-popup">'
+    +'<div class="row" style="margin-bottom:10px"><h2 class="card-title">'+(te.isNew?"텍스트 스티커 추가":"텍스트 수정")+'</h2>'
+    +'<button class="chip-btn" style="margin-left:auto" onclick="A.stickerTextCancel()">취소</button></div>'
+    +'<textarea id="te-input" rows="4" placeholder="내용을 입력하세요.&#10;엔터로 줄을 바꿀 수 있어요." style="resize:vertical;line-height:1.5">'+esc(cur)+'</textarea>'
+    +'<button class="btn" style="margin-top:10px" onclick="A.stickerTextSave()">'+(te.isNew?"추가":"저장")+'</button>'
+    +'</div></div>';
+}
+
+/* ── 월간 보고서 (2번) ── */
+function monthReportData(y,m){
+  const daysIn=new Date(y,m+1,0).getDate();
+  const firstDow=new Date(y,m,1).getDay();
+  let totTodos=0,totPomos=0;
+  const perProj={},weekdayT=[0,0,0,0,0,0,0];
+  const weeks=[];
+  for(let d=1;d<=daysIn;d++){
+    const key=y+"-"+String(m+1).padStart(2,"0")+"-"+String(d).padStart(2,"0");
+    const dow=new Date(y,m,d).getDay();
+    let tC=0;
+    for(const p of data.projects)for(const t of p.todos)
+      if(t.done&&t.doneAt===key){tC++;perProj[p.name]=(perProj[p.name]||0)+1;}
+    const pC=Object.values(data.pomoLog[key]||{}).reduce((s,v)=>s+v,0);
+    totTodos+=tC;totPomos+=pC;weekdayT[dow]+=tC;
+    const wIdx=Math.floor((d-1+firstDow)/7);
+    if(!weeks[wIdx])weeks[wIdx]={todos:0,pomos:0};
+    weeks[wIdx].todos+=tC;weeks[wIdx].pomos+=pC;
+  }
+  const topProjs=Object.entries(perProj).sort((a,b)=>b[1]-a[1]).slice(0,3);
+  let bestDow=0;for(let i=1;i<7;i++)if(weekdayT[i]>weekdayT[bestDow])bestDow=i;
+  return{totTodos,totPomos,weeks,topProjs,bestDow,hasData:totTodos>0||totPomos>0};
+}
+function reportPopupHTML(y,m){
+  const r=monthReportData(y,m);
+  const maxW=Math.max(1,...r.weeks.map(w=>Math.max(w.todos,w.pomos)));
+  let h='<div id="block-popup-bg" onclick="if(event.target.id===\'block-popup-bg\')A.reportClose()">'
+    +'<div id="block-popup">'
+    +'<div class="row" style="margin-bottom:12px">'
+    +'<button class="icon-btn" onclick="A.reportNav(-1)">◀</button>'
+    +'<h2 style="font-size:16px;font-weight:800;margin:0 auto">'+y+'년 '+(m+1)+'월 보고서</h2>'
+    +'<button class="icon-btn" onclick="A.reportNav(1)">▶</button>'
+    +'<button class="chip-btn" onclick="A.reportClose()">닫기</button></div>';
+  if(!r.hasData){
+    h+='<p class="empty">이 달에는 기록이 없어요.</p>';
+  }else{
+    /* 요약 */
+    h+='<div class="row" style="gap:10px;margin-bottom:14px">'
+      +'<div style="flex:1;background:var(--accent-soft);border-radius:12px;padding:12px;text-align:center">'
+      +'<div style="font-size:24px;font-weight:900;color:var(--accent)">'+r.totTodos+'</div>'
+      +'<div style="font-size:11px;color:var(--sub);font-weight:700">완료한 투두</div></div>'
+      +'<div style="flex:1;background:#FFF3F0;border-radius:12px;padding:12px;text-align:center">'
+      +'<div style="font-size:24px;font-weight:900;color:#E8590C">'+r.totPomos+'</div>'
+      +'<div style="font-size:11px;color:var(--sub);font-weight:700">🍅 뽀모도로</div></div></div>';
+    /* 주차별 차트 */
+    h+='<div style="font-size:12px;font-weight:800;color:var(--sub);margin-bottom:6px">주차별 추이</div>'
+      +'<div style="display:flex;gap:8px;align-items:flex-end;height:80px;margin-bottom:6px">';
+    r.weeks.forEach((w,i)=>{
+      h+='<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px">'
+        +'<div style="display:flex;gap:2px;align-items:flex-end;height:56px">'
+        +'<div style="width:12px;border-radius:3px 3px 0 0;background:var(--accent);height:'+Math.max(3,Math.round(w.todos/maxW*54))+'px" title="투두 '+w.todos+'"></div>'
+        +'<div style="width:12px;border-radius:3px 3px 0 0;background:#E8590C;height:'+Math.max(3,Math.round(w.pomos/maxW*54))+'px" title="뽀모 '+w.pomos+'"></div></div>'
+        +'<div style="font-size:9px;color:var(--sub);font-weight:700">'+(i+1)+'주</div>'
+        +'<div style="font-size:9px;color:var(--sub)">'+w.todos+'/'+w.pomos+'</div></div>';
+    });
+    h+='</div>'
+      +'<div class="row" style="gap:10px;font-size:10px;color:var(--sub);justify-content:center;margin-bottom:14px">'
+      +'<span class="row" style="gap:3px"><span style="width:8px;height:8px;border-radius:2px;background:var(--accent)"></span>투두</span>'
+      +'<span class="row" style="gap:3px"><span style="width:8px;height:8px;border-radius:2px;background:#E8590C"></span>뽀모도로</span></div>';
+    /* 프로젝트 톱3 */
+    if(r.topProjs.length){
+      h+='<div style="font-size:12px;font-weight:800;color:var(--sub);margin-bottom:6px">가장 많이 완료한 프로젝트</div>';
+      r.topProjs.forEach(([name,cnt],i)=>{
+        h+='<div class="row" style="padding:4px 0;font-size:13px">'
+          +'<span style="font-weight:800;color:var(--sub);width:20px">'+(i+1)+'</span>'
+          +'<span style="flex:1;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(name)+'</span>'
+          +'<span style="font-weight:800;color:var(--accent)">'+cnt+'개</span></div>';
+      });
+    }
+    h+='<p style="font-size:12px;color:var(--sub);margin:10px 0 0">가장 생산적인 요일: <b>'+DAY_NAMES[r.bestDow]+'요일</b></p>'
+      +'<button class="btn gray" style="margin-top:12px" onclick="A.reportDownload('+y+','+m+')">보고서 파일로 저장</button>';
+  }
+  h+='</div></div>';
+  return h;
+}
 function renderScreenLayer(){const layer=document.getElementById("screen-layer");layer.innerHTML=data.screenStickers.filter(s=>s.tabId===ui.tab).map(s=>stickerHTML(s,"screen")).join("");}
 
 /* ══════════ 컨테이너 렌더러 ══════════ */
@@ -726,7 +847,7 @@ function cPomo(compact){
     return{label:DAY_NAMES[d.getDay()],count,isToday:key===todayKey()};
   });
   const maxC=Math.max(1,...weekData.map(w=>w.count));
-  let h='<div class="card-head"><h2 class="card-title">뽀모도로</h2><span class="badge" id="pomo-cycles">완료 '+pomo.cycles+'회</span></div>'
+  let h='<div class="card-head"><h2 class="card-title">뽀모도로</h2><div class="row" style="gap:6px"><button class="chip-btn" onclick="A.reportOpen()">📊 월간</button><span class="badge" id="pomo-cycles">완료 '+pomo.cycles+'회</span></div></div>'
     +'<div class="pomo-wrap"><div class="pomo-dial">'
     +'<svg width="116" height="116" viewBox="0 0 116 116"><circle cx="58" cy="58" r="48" fill="none" stroke="#EEF0F5" stroke-width="8"></circle>'
     +'<circle id="pomo-ring" cx="58" cy="58" r="48" fill="none" stroke="'+esc(data.theme.accent)+'" stroke-width="8" stroke-linecap="round" stroke-dasharray="'+C+'" stroke-dashoffset="0" transform="rotate(-90 58 58)" style="transition:stroke-dashoffset .25s linear"></circle></svg>'
@@ -836,11 +957,15 @@ function cTodayTodos(compact,ctx){
   const behind=getBehindProjects(sim);
   let h='<div class="card-head"><h2 class="card-title">오늘의 투두</h2>'
     +'<div class="row" style="gap:4px">'
-    +[["block","블록순"],["urgent","급한순"],["priority","우선순위"]].map(([k,l])=>'<button class="chip-btn'+(data.todoSort===k?" on":"")+'" onclick="A.setTodoSort(\''+k+'\')">'+l+'</button>').join("")
+    +[["block","블록순"],["urgent","급한순"],["priority","우선순위"],["behind","지난 투두"+(behind.length?" "+behind.length:"")]].map(([k,l])=>'<button class="chip-btn'+(data.todoSort===k?" on":"")+(k==="behind"&&behind.length?'" style="color:var(--danger);border-color:#FFD6DF':"")+'" onclick="A.setTodoSort(\''+k+'\')">'+l+'</button>').join("")
     +'</div></div>';
 
   const allItems=Object.values(plan.queues).flat();
   if(!allItems.length&&!behind.length)return h+'<p class="empty">계획 탭에서 블록에 태그를 연결하고 프로젝트를 추가하면 오늘의 투두가 자동 배치됩니다.</p>';
+  if(data.todoSort==="behind"){
+    h+=behindListHTML(behind,compact);
+    return h;
+  }
   if(data.todoSort==="block"){
     for(const b of timed){
       const items=plan.byBlock[b.id]||[];if(!b.tagId||!items.length)continue;
@@ -866,41 +991,41 @@ function cTodayTodos(compact,ctx){
     h+=show.map(it=>{const tag=tm[it.tagId];return todoRowHTML(it,tag?tag.color:"var(--sub)",compact,true,tag);}).join("");
     if(compact&&items.length>5)h+='<p class="hint">외 '+(items.length-5)+'개…</p>';
   }
-  /* ── 지난 투두란 (5번) —
-     예정 종료일이 설정 마감일을 넘긴 프로젝트의 "따라잡기" 투두들.
-     계획된 배분 외에 이만큼 더 해내면 원래 마감일에 맞출 수 있음 ── */
-  if(behind.length){
-    h+='<div style="margin-top:14px;padding-top:12px;border-top:2px dashed #FFD6DF">'
-      +'<div style="font-size:12px;font-weight:800;color:var(--danger);margin-bottom:3px">⏰ 지난 투두 — 마감 기한 복구용</div>'
-      +'<p style="font-size:11px;color:var(--sub);margin:0 0 8px">지금 속도로는 마감을 넘겨요. 계획 외 시간에 아래를 해치우면 원래 마감일에 맞출 수 있어요.</p>';
-    for(const g of behind){
-      const showItems=compact?g.extraTodos.slice(0,2):g.extraTodos;
-      const dChip=g.daysLeft>=0?'마감까지 D-'+g.daysLeft:'마감 '+Math.abs(g.daysLeft)+'일 초과';
-      h+='<div style="background:#FFF9FA;border:1px solid #FFE3EA;border-radius:10px;padding:9px;margin-bottom:8px">'
-        +'<div class="row" style="gap:6px;margin-bottom:4px;flex-wrap:wrap">'
-        +'<span style="width:8px;height:8px;border-radius:2px;background:'+g.tagColor+';flex-shrink:0"></span>'
-        +'<span style="font-size:13px;font-weight:800">'+esc(g.projName)+'</span>'
-        +'<span class="overdue-chip">'+dChip+'</span>'
-        +(g.finish?'<span style="font-size:11px;color:var(--sub)">현재 예정 '+fmtDate(new Date(g.finish))+' 종료</span>':'<span style="font-size:11px;color:var(--danger)">현재 속도론 종료 불가</span>')
-        +'<span style="font-size:11px;color:var(--danger);font-weight:700;margin-left:auto">+'+g.extraTodos.length+'개 · '+fmtDur(g.extraHours)+' 더 필요</span></div>'
-        +showItems.map(t=>'<div class="todo'+(t.done?" done":"")+'">'
-          +'<button class="check" style="'+(t.done?"background:"+g.tagColor+";border-color:"+g.tagColor:"")+'" onclick="A.toggleTodo(\''+g.projectId+'\',\''+t.id+'\')">'+( t.done?"✓":"")+'</button>'
-          +'<div style="min-width:0;flex:1"><div class="todo-text" style="font-size:13px">'+esc(t.text)+'</div>'
-          +'<div class="todo-sub">'+fmtDur(g.hours)+'</div></div></div>').join("")
-        +(compact&&g.extraTodos.length>2?'<p class="hint" style="margin:2px 0 0">외 '+(g.extraTodos.length-2)+'개…</p>':"")
-        +'</div>';
-    }
-    h+='</div>';
+  return h;
+}
+/* 지난 투두 탭 내용 (3번) — 마감 복구용 따라잡기 목록 */
+function behindListHTML(behind,compact){
+  if(!behind.length)return'<p class="empty">👍 모든 프로젝트가 마감 안에 끝날 예정이에요.</p>';
+  let h='<p style="font-size:11px;color:var(--sub);margin:0 0 8px">지금 속도로는 마감을 넘기는 프로젝트들이에요. 계획 외 시간에 아래를 해치우면 원래 마감일에 맞출 수 있어요.</p>';
+  for(const g of behind){
+    const showItems=compact?g.extraTodos.slice(0,2):g.extraTodos;
+    const dChip=g.daysLeft>=0?'마감까지 D-'+g.daysLeft:'마감 '+Math.abs(g.daysLeft)+'일 초과';
+    h+='<div style="background:#FFF9FA;border:1px solid #FFE3EA;border-radius:10px;padding:9px;margin-bottom:8px">'
+      +'<div class="row" style="gap:6px;margin-bottom:4px;flex-wrap:wrap">'
+      +'<span style="width:8px;height:8px;border-radius:2px;background:'+g.tagColor+';flex-shrink:0"></span>'
+      +'<span style="font-size:13px;font-weight:800">'+esc(g.projName)+'</span>'
+      +'<span class="overdue-chip">'+dChip+'</span>'
+      +(g.finish?'<span style="font-size:11px;color:var(--sub)">현재 예정 '+fmtDate(new Date(g.finish))+' 종료</span>':'<span style="font-size:11px;color:var(--danger)">현재 속도론 종료 불가</span>')
+      +'<span style="font-size:11px;color:var(--danger);font-weight:700;margin-left:auto">+'+g.extraTodos.length+'개 · '+fmtDur(g.extraHours)+' 더 필요</span></div>'
+      +showItems.map(t=>'<div class="todo'+(t.done?" done":"")+'">'
+        +'<button class="check" style="'+(t.done?"background:"+g.tagColor+";border-color:"+g.tagColor:"")+'" onclick="A.toggleTodo(\''+g.projectId+'\',\''+t.id+'\')">'+( t.done?"✓":"")+'</button>'
+        +'<div style="min-width:0;flex:1"><div class="todo-text" style="font-size:13px">'+esc(t.text)+'</div>'
+        +'<div class="todo-sub">'+fmtDur(g.hours)+'</div></div></div>').join("")
+      +(compact&&g.extraTodos.length>2?'<p class="hint" style="margin:2px 0 0">외 '+(g.extraTodos.length-2)+'개…</p>':"")
+      +'</div>';
   }
   return h;
 }
 function todoRowHTML(it,color,compact,withMeta,tag){
   let meta=esc(it.projName)+" · "+fmtDur(it.hours);
+  if(it.todo.pomos)meta+=' · 🍅'+it.todo.pomos;
   if(withMeta&&it.deadline){const n=calcDDayNum(it.deadline);meta+=' · <span class="deadline-chip" style="background:'+(n<=3?"var(--danger)":"var(--line)")+';color:'+(n<=3?"#fff":"var(--sub)")+'">'+calcDDay(it.deadline)+'</span>';}
   return'<div class="todo'+(it.todo.done?" done":"")+'">'
     +'<button class="check" style="'+(it.todo.done?"background:"+color+";border-color:"+color:"")+'" onclick="A.toggleTodo(\''+it.projectId+'\',\''+it.todo.id+'\')">'+( it.todo.done?"✓":"")+'</button>'
     +'<div style="min-width:0;flex:1"><div class="todo-text">'+(withMeta&&tag?'<span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:'+tag.color+';margin-right:5px"></span>':"")
-    +esc(it.todo.text)+'</div><div class="todo-sub">'+meta+'</div></div></div>';
+    +esc(it.todo.text)+'</div><div class="todo-sub">'+meta+'</div></div>'
+    +(!compact&&!it.todo.done?'<button class="icon-btn" style="width:24px;height:24px;font-size:10px" title="이 투두로 뽀모도로" onclick="A.pomoTodo(\''+it.projectId+'\',\''+it.todo.id+'\')">▶</button>':"")
+    +'</div>';
 }
 
 /* ── 블록 설정 ── */
@@ -1013,11 +1138,12 @@ function projListHTML(sim,tm){
       const sortedTodos=[...p.todos].sort((a,b)=>(a.order??0)-(b.order??0));
       h+='<div style="margin-left:23px;margin-top:8px;background:#FAFBFD;border:1px solid var(--line);border-radius:12px;padding:9px">';
       sortedTodos.forEach((t,ti)=>{
-        h+='<div class="todo-item'+(t.done?" done":"")+'" data-tpid="'+p.id+'" data-tidx="'+ti+'">'
+        h+='<div class="todo-item'+(t.done?" done":"")+(t.chain?" chained":"")+'" data-tpid="'+p.id+'" data-tidx="'+ti+'">'
           +'<div class="row" style="gap:6px;padding:5px 0">'
           +'<span class="todo-drag" title="드래그로 순서 변경" '
           +'onmousedown="tDragStart(event,\''+p.id+'\','+ti+')" '
           +'ontouchstart="tDragStart(event,\''+p.id+'\','+ti+')">⠿</span>'
+          +(ti>0?'<button class="icon-btn'+(t.chain?'" style="background:var(--accent-soft);color:var(--accent);border-color:var(--accent)':'')+'" title="'+(t.chain?"묶음 해제":"이전 투두와 묶기 (연이어 처리)")+'" onclick="A.todoChain(\''+p.id+'\',\''+t.id+'\')" style="width:24px;height:24px;font-size:11px">⛓</button>':'<span style="width:24px;flex-shrink:0"></span>')
           +'<button class="check" style="width:21px;height:21px;'+(t.done?"background:"+(tag?tag.color:"#888")+";border-color:"+(tag?tag.color:"#888"):"")+'" onclick="A.toggleTodo(\''+p.id+'\',\''+t.id+'\')">'+( t.done?"✓":"")+'</button>'
           +'<input value="'+esc(t.text)+'" style="padding:6px 9px;font-size:13px;'+(t.done?"text-decoration:line-through;color:var(--sub)":"")+'" onchange="A.todoText(\''+p.id+'\',\''+t.id+'\',this.value)">'
           +'<button class="icon-btn danger" style="width:24px;height:24px;font-size:11px" onclick="A.todoDel(\''+p.id+'\',\''+t.id+'\')">✕</button>'
@@ -1088,7 +1214,9 @@ function render(){
   let popupEl=document.getElementById("popup-slot");
   if(!popupEl){popupEl=document.createElement("div");popupEl.id="popup-slot";document.body.appendChild(popupEl);}
   popupEl.innerHTML=(ui.stylePopup?stickerStylePopupHTML(ui.stylePopup.scope,ui.stylePopup.id):"")
-    +(ui.blockPopup?blockPopupHTML(ui.blockPopup):"");
+    +(ui.blockPopup?blockPopupHTML(ui.blockPopup):"")
+    +(ui.textEdit?textEditPopupHTML():"")
+    +(ui.reportOpen?reportPopupHTML(ui.reportOpen.y,ui.reportOpen.m):"");
 }
 function toolbarHTML(){
   const tab=curTab();const inTab=new Set([...tab.aux,...tab.main]);const unused=Object.keys(SECTION_LABELS).filter(c=>!inTab.has(c));
@@ -1109,6 +1237,23 @@ function settingsHTML(){
     +'<div class="row" style="flex-wrap:wrap;gap:14px;margin-bottom:12px">'
     +[["accent","포인트"],["bg","배경"],["card","카드"],["ink","글자"]].map(([k,l])=>'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--sub)"><input type="color" value="'+esc(data.theme[k])+'" oninput="A.themeSet(\''+k+'\',this.value)">'+l+'</label>').join("")
     +'<button class="chip-btn" onclick="A.themeReset()">기본 테마</button></div>'
+    +'<div class="row" style="margin-bottom:12px"><label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer">'
+    +'<input type="checkbox" '+(data.autoReport?"checked":"")+' onchange="A.setAutoReport(this.checked)" style="width:18px;height:18px">'
+    +'매월 말일에 월간 보고서 자동으로 열기</label></div>'
+    +'<div style="border-top:1px solid var(--line);margin-bottom:12px;padding-top:12px">'
+    +'<h2 class="card-title" style="margin-bottom:8px">실행 옵션</h2>'
+    +'<div class="row" style="margin-bottom:8px">'
+    +'<button class="btn gray" onclick="A.toggleFullscreen()">'+(document.fullscreenElement?"전체 화면 해제":"지금 전체 화면으로")+'</button></div>'
+    +'<label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:10px">'
+    +'<input type="checkbox" '+(data.launch&&data.launch.fsFirstTap?"checked":"")+' onchange="A.setFsFirstTap(this.checked)" style="width:18px;height:18px">'
+    +'실행 후 첫 터치 시 자동 전체 화면</label>'
+    +'<details style="font-size:12px;color:var(--sub)"><summary style="cursor:pointer;font-weight:700">부팅 시 자동 실행 · 창 모드 설정법</summary>'
+    +'<div style="line-height:1.8;margin-top:8px">'
+    +'웹 앱 특성상 아래 항목은 기기(OS) 설정에서 지정합니다.<br><br>'
+    +'<b>독립 창으로 실행</b> — 브라우저에서 이 페이지를 열고 주소창의 설치 아이콘(PC) 또는 "홈 화면에 추가"(모바일)로 설치하면 주소창 없는 독립 창으로 열립니다.<br><br>'
+    +'<b>PC 부팅 시 자동 실행</b> — 앱 설치 후: Chrome 주소창에 chrome://apps 입력 → 블록 플래너 우클릭 → "로그인 시 앱 시작" 체크. 또는 Windows의 시작 프로그램 폴더(Win+R → shell:startup)에 앱 바로가기를 넣어도 됩니다.<br><br>'
+    +'<b>모바일</b> — 안드로이드/iOS는 보안상 부팅 자동 실행이 불가하지만, 홈 화면 첫 페이지에 두면 한 번의 탭으로 열립니다.'
+    +'</div></details></div>'
     +'<p class="empty" style="margin-bottom:10px">'+modeText+'</p>'
     +'<div class="row"><button class="btn gray" onclick="A.exportData()">백업 내려받기</button><button class="btn gray" onclick="document.getElementById(\'import-file\').click()">백업 불러오기</button></div>'
     +'<input id="import-file" type="file" accept="application/json,.json" style="display:none" onchange="A.importData(this)">'
@@ -1354,11 +1499,18 @@ const A={
   tabRename(){const tab=curTab();if(tab.builtin)return;const name=prompt("탭 이름 변경",tab.name);if(!name||!name.trim())return;tab.name=name.trim();save();render();},
   tabDel(){const tab=curTab();if(tab.builtin)return;if(!confirm("'"+tab.name+"' 탭을 삭제할까요?"))return;data.screenStickers=data.screenStickers.filter(s=>s.tabId!==tab.id);data.tabs=data.tabs.filter(t=>t.id!==tab.id);ui.tab="main";save();render();},
   /* 뽀모도로 */
-  pomoBlock(bid){pomo.blockId=bid;pomoResetTimer("work");pomoStart();},
+  pomoBlock(bid){pomo.blockId=bid;pomo.todo=null;pomoResetTimer("work");pomoStart();},
+  /* 개별 투두와 연동 (4번) */
+  pomoTodo(pid,tid){
+    const p=data.projects.find(x=>x.id===pid);
+    const t=p?p.todos.find(x=>x.id===tid):null;
+    if(!t)return;
+    pomo.todo={pid,tid,text:t.text.slice(0,12)};pomo.blockId=null;
+    pomoResetTimer("work");pomoStart();},
   pomoToggle(){pomo.running?pomoPause():pomoStart();},
   pomoReset(){pomoResetTimer();},
   pomoSwitch(){pomoResetTimer(pomo.phase==="work"?"rest":"work");},
-  pomoUnlink(){pomo.blockId=null;pomoPaint();},
+  pomoUnlink(){pomo.blockId=null;pomo.todo=null;pomoPaint();},
   pomoSetWork(v){data.pomodoro.work=Math.max(1,Math.min(120,parseInt(v)||25));if(!pomo.running)pomo.leftMs=pomoDur(pomo.phase);save();pomoPaint();},
   pomoSetRest(v){data.pomodoro.rest=Math.max(1,Math.min(60,parseInt(v)||5));if(!pomo.running)pomo.leftMs=pomoDur(pomo.phase);save();pomoPaint();},
   /* D-Day */
@@ -1366,11 +1518,17 @@ const A={
   ddayAdd(){const name=document.getElementById("dd-name")?.value.trim(),date=document.getElementById("dd-date")?.value,color=document.getElementById("dd-color")?.value||PALETTE[0];if(!name||!date)return;data.ddays.push({id:uid(),name,date,color});ui.addDDay=false;save();render();},
   ddayDel(id){data.ddays=data.ddays.filter(d=>d.id!==id);save();render();},
   /* 보드 */
-  boardPrompt(type){const v=prompt(type==="emoji"?"이모지 입력":"텍스트 입력");if(!v||!v.trim())return;data.boardStickers.push(type==="emoji"?{id:uid(),type:"emoji",emoji:v.trim(),x:15,y:15,w:70}:{id:uid(),type:"text",text:v.trim(),x:15,y:15,w:110});save();render();},
+  boardPrompt(type){
+    if(type==="text"){ui.textEdit={scope:"board",isNew:true};render();return;}
+    const v=prompt("이모지 입력");if(!v||!v.trim())return;
+    data.boardStickers.push({id:uid(),type:"emoji",emoji:v.trim(),x:15,y:15,w:70});save();render();},
   boardFile(input){fileToSticker(input,src=>{data.boardStickers.push({id:uid(),type:"image",src,x:15,y:15,w:95});save();render();});},
   boardHSet(v){data.boardH=parseInt(v)||200;save();render();},
   /* 화면 스티커 */
-  screenPrompt(type){const v=prompt(type==="emoji"?"이모지 입력":"텍스트 입력");if(!v||!v.trim())return;data.screenStickers.push(type==="emoji"?{id:uid(),tabId:ui.tab,type:"emoji",emoji:v.trim(),x:40,y:120,w:70}:{id:uid(),tabId:ui.tab,type:"text",text:v.trim(),x:40,y:120,w:120});save();render();},
+  screenPrompt(type){
+    if(type==="text"){ui.textEdit={scope:"screen",isNew:true};render();return;}
+    const v=prompt("이모지 입력");if(!v||!v.trim())return;
+    data.screenStickers.push({id:uid(),tabId:ui.tab,type:"emoji",emoji:v.trim(),x:40,y:120,w:70});save();render();},
   screenFile(input){fileToSticker(input,src=>{data.screenStickers.push({id:uid(),tabId:ui.tab,type:"image",src,x:40,y:120,w:100});save();render();});},
   stickerDel(scope,id){if(scope==="board")data.boardStickers=data.boardStickers.filter(s=>s.id!==id);else data.screenStickers=data.screenStickers.filter(s=>s.id!==id);save();render();},
   /* 레이어 앞뒤 조절 (5번) */
@@ -1390,14 +1548,23 @@ const A={
     const el=document.getElementById("sticker-"+id);
     if(el){const inner=el.querySelector(".sticker-emoji-inner,.sticker-text-inner");if(inner)inner.style.fontSize=s.fontSize+"px";}
     save();},
-  /* 텍스트 내용 수정 — 더블클릭 또는 ✏️ (줄바꿈 지원: \n 그대로 저장됨) */
-  stickerEditText(scope,id){
-    const arr=scope==="board"?data.boardStickers:data.screenStickers;
-    const s=arr.find(x=>x.id===id);if(!s||s.type!=="text")return;
-    const v=prompt("내용 수정 (줄바꿈은 \\n 입력 또는 그대로 유지됨)",s.text);
-    if(v===null)return;
-    s.text=v.replace(/\\n/g,"\n"); /* \n 입력을 실제 줄바꿈으로 */
-    save();render();},
+  /* 텍스트 내용 수정 — 여러 줄 팝업 (1번) */
+  stickerEditText(scope,id){ui.textEdit={scope,id,isNew:false};render();},
+  stickerTextCancel(){ui.textEdit=null;render();},
+  stickerTextSave(){
+    const te=ui.textEdit;if(!te)return;
+    const v=document.getElementById("te-input")?.value;
+    if(v==null||!v.trim()){ui.textEdit=null;render();return;}
+    if(te.isNew){
+      const item={id:uid(),type:"text",text:v,x:te.scope==="board"?15:40,y:te.scope==="board"?15:120,w:140,h:80};
+      if(te.scope==="board")data.boardStickers.push(item);
+      else{item.tabId=ui.tab;data.screenStickers.push(item);}
+    }else{
+      const arr=te.scope==="board"?data.boardStickers:data.screenStickers;
+      const s=arr.find(x=>x.id===te.id);
+      if(s)s.text=v;
+    }
+    ui.textEdit=null;save();render();},
   /* 글꼴·스타일 팝업 (3번) */
   stickerStyleOpen(scope,id){ui.stylePopup={scope,id};render();},
   stickerStyleClose(){ui.stylePopup=null;render();},
@@ -1436,6 +1603,9 @@ const A={
   pSetCap(id,v){const p=data.projects.find(x=>x.id===id);if(p){const n=parseFloat(v);p.dailyCap=isNaN(n)||n<=0?null:n;save();render();}},
   pDeadline(id,v){const p=data.projects.find(x=>x.id===id);if(p){p.deadline=v||null;save();render();}},
   todoText(pid,tid,v){data.projects.find(p=>p.id===pid).todos.find(t=>t.id===tid).text=v;save();},
+  /* 이전 투두와 묶기 토글 (5번) */
+  todoChain(pid,tid){const t=data.projects.find(p=>p.id===pid).todos.find(x=>x.id===tid);
+    t.chain=!t.chain;save();render();},
   todoDel(pid,tid){const p=data.projects.find(x=>x.id===pid);p.todos=p.todos.filter(t=>t.id!==tid);p.todos.forEach((t,i)=>t.order=i);save();render();},
   todoAdd(pid){const el=document.getElementById("new-todo");const v=el?.value.trim();if(!v)return;const p=data.projects.find(x=>x.id===pid);p.todos.push({id:uid(),text:v,done:false,doneAt:null,order:p.todos.length});save();render();},
   todoGenRange(pid){
@@ -1468,6 +1638,15 @@ const A={
   /* 테마 */
   themeSet(k,v){data.theme[k]=v;applyTheme();save();if(k==="accent")pomoPaint();},
   themeReset(){data.theme={...DEFAULT_THEME};applyTheme();save();render();},
+  setAutoReport(v){data.autoReport=!!v;save();},
+  /* 실행 옵션 (6번) */
+  toggleFullscreen(){
+    if(document.fullscreenElement)document.exitFullscreen().catch(()=>{});
+    else document.documentElement.requestFullscreen().catch(()=>{alert("이 브라우저에서는 전체 화면을 지원하지 않아요.");});
+    setTimeout(render,300);},
+  setFsFirstTap(v){
+    if(!data.launch)data.launch={};
+    data.launch.fsFirstTap=!!v;save();},
   /* 동기화 */
   syncConnect(){
     const url=document.getElementById("sy-url")?.value.trim();
@@ -1479,6 +1658,25 @@ const A={
     render();
   },
   syncLogin(){fbSignIn();},
+  /* 월간 보고서 (2번) */
+  reportOpen(){const n=new Date();ui.reportOpen={y:n.getFullYear(),m:n.getMonth()};render();},
+  reportClose(){ui.reportOpen=null;render();},
+  reportNav(dir){if(!ui.reportOpen)return;
+    let{y,m}=ui.reportOpen;m+=dir;
+    if(m<0){m=11;y--;}if(m>11){m=0;y++;}
+    ui.reportOpen={y,m};render();},
+  reportDownload(y,m){
+    const r=monthReportData(y,m);
+    let txt=y+"년 "+(m+1)+"월 블록 플래너 보고서\n"+"=".repeat(30)+"\n\n"
+      +"완료한 투두: "+r.totTodos+"개\n뽀모도로: "+r.totPomos+"회\n\n주차별:\n";
+    r.weeks.forEach((w,i)=>{txt+="  "+(i+1)+"주차 — 투두 "+w.todos+"개, 뽀모 "+w.pomos+"회\n";});
+    if(r.topProjs.length){txt+="\n프로젝트 순위:\n";
+      r.topProjs.forEach(([n,c],i)=>{txt+="  "+(i+1)+". "+n+" — "+c+"개\n";});}
+    txt+="\n가장 생산적인 요일: "+DAY_NAMES[r.bestDow]+"요일\n";
+    const blob=new Blob([txt],{type:"text/plain;charset=utf-8"});
+    const a=document.createElement("a");a.href=URL.createObjectURL(blob);
+    a.download="planner-report-"+y+"-"+String(m+1).padStart(2,"0")+".txt";a.click();
+    URL.revokeObjectURL(a.href);},
   syncNow(){
     const ref=fbDataRef();
     if(!ref){alert("로그인이 필요해요.");return;}
@@ -1510,6 +1708,22 @@ window.A=A;window.tDragStart=tDragStart;
   let raw=await store.get("planner-state");
   try{data=migrate(raw?JSON.parse(raw):null);}catch{data=makeDefault();}
   applyTheme();setBadge(fmtDate(new Date()));render();
+  /* 월말 자동 보고서 (2번) */
+  if(data.autoReport){
+    const n=new Date();
+    const lastDay=new Date(n.getFullYear(),n.getMonth()+1,0).getDate();
+    const mKey=n.getFullYear()+"-"+(n.getMonth()+1);
+    if(n.getDate()===lastDay&&data.lastAutoReport!==mKey){
+      ui.reportOpen={y:n.getFullYear(),m:n.getMonth()};
+      data.lastAutoReport=mKey;save();render();
+    }
+  }
+  /* 첫 터치 시 전체 화면 (6번) — 브라우저 정책상 사용자 제스처 필요 */
+  if(data.launch&&data.launch.fsFirstTap&&!document.fullscreenElement){
+    const fsOnce=()=>{document.documentElement.requestFullscreen().catch(()=>{});
+      document.removeEventListener("pointerdown",fsOnce);};
+    document.addEventListener("pointerdown",fsOnce,{once:true});
+  }
   // Firebase 설정이 있으면 SDK 로드 + 로그인 상태 감지 시작
   if(fbReady())fbInit(fbCfg, ()=>{});
   document.addEventListener("visibilitychange",()=>{
