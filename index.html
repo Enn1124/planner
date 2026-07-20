@@ -736,23 +736,97 @@ function monthReportData(y,m){
   const daysIn=new Date(y,m+1,0).getDate();
   const firstDow=new Date(y,m,1).getDay();
   let totTodos=0,totPomos=0;
-  const perProj={},weekdayT=[0,0,0,0,0,0,0];
+  const perProj={},perTag={},weekdayT=[0,0,0,0,0,0,0];
+  /* 시간대별 뽀모도로 집계 (6구간: 새벽0-6, 오전6-9, 오전9-12, 오후12-18, 저녁18-21, 밤21-24) */
+  const timeSlots=[
+    {label:"새벽(0-6시)",key:"dawn",count:0},
+    {label:"아침(6-9시)",key:"morning",count:0},
+    {label:"오전(9-12시)",key:"forenoon",count:0},
+    {label:"오후(12-18시)",key:"afternoon",count:0},
+    {label:"저녁(18-21시)",key:"evening",count:0},
+    {label:"밤(21-24시)",key:"night",count:0}
+  ];
+  /* 프로젝트·태그별 빠름/느림: 완료 투두당 소요 일수 추정 */
+  const projSpeed={};  // {name, tagId, done, totalPomos}
+  const tagMap2={};
+  data.tags.forEach(t=>tagMap2[t.id]=t);
   const weeks=[];
   for(let d=1;d<=daysIn;d++){
     const key=y+"-"+String(m+1).padStart(2,"0")+"-"+String(d).padStart(2,"0");
     const dow=new Date(y,m,d).getDay();
     let tC=0;
-    for(const p of data.projects)for(const t of p.todos)
-      if(t.done&&t.doneAt===key){tC++;perProj[p.name]=(perProj[p.name]||0)+1;}
-    const pC=Object.values(data.pomoLog[key]||{}).reduce((s,v)=>s+v,0);
-    totTodos+=tC;totPomos+=pC;weekdayT[dow]+=tC;
+    for(const p of data.projects){
+      if(!projSpeed[p.id])projSpeed[p.id]={name:p.name,tagId:p.tagId,done:0,pomos:0};
+      for(const t of p.todos){
+        if(t.done&&t.doneAt===key){
+          tC++;
+          perProj[p.name]=(perProj[p.name]||0)+1;
+          const tagName=tagMap2[p.tagId]?tagMap2[p.tagId].name:"기타";
+          perTag[tagName]=(perTag[tagName]||0)+1;
+          projSpeed[p.id].done++;
+          projSpeed[p.id].pomos+=(t.pomos||0);
+        }
+      }
+    }
+    /* 뽀모도로 시간대 추정: pomoLog에 시각 정보 없으므로 블록 배치 기반으로 근사
+       대신 pomoLog 키로 날짜별 집계하고 블록 시작 시각으로 시간대 매핑 */
+    const dayPomos=data.pomoLog[key]||{};
+    let dayPomoCnt=0;
+    for(const [bid,cnt] of Object.entries(dayPomos)){
+      dayPomoCnt+=cnt;
+      /* bid가 블록 ID면 해당 블록 시작 시각으로 시간대 분류 */
+      const blk=data.blocks.find(b=>b.id===bid);
+      if(blk){
+        /* blockTimes()는 현재 설정 기준이므로 dayStart 기준으로 누적 계산 */
+        let cum=data.dayStart||0;
+        for(const b2 of data.blocks){
+          if(b2.id===bid){
+            const hr=((cum%24)+24)%24;
+            const si=hr<6?0:hr<9?1:hr<12?2:hr<18?3:hr<21?4:5;
+            timeSlots[si].count+=cnt;
+            break;
+          }
+          cum+=b2.hours;
+        }
+      }else if(bid==="_todo"){
+        /* 투두 연동 뽀모도로는 오전 시간대로 기본 분류 */
+        timeSlots[2].count+=cnt;
+      }
+    }
+    totPomos+=dayPomoCnt;
+    totTodos+=tC;weekdayT[dow]+=tC;
     const wIdx=Math.floor((d-1+firstDow)/7);
     if(!weeks[wIdx])weeks[wIdx]={todos:0,pomos:0};
-    weeks[wIdx].todos+=tC;weeks[wIdx].pomos+=pC;
+    weeks[wIdx].todos+=tC;weeks[wIdx].pomos+=dayPomoCnt;
   }
   const topProjs=Object.entries(perProj).sort((a,b)=>b[1]-a[1]).slice(0,3);
   let bestDow=0;for(let i=1;i<7;i++)if(weekdayT[i]>weekdayT[bestDow])bestDow=i;
-  return{totTodos,totPomos,weeks,topProjs,bestDow,hasData:totTodos>0||totPomos>0};
+  /* 시간대 패턴: 뽀모도로 많은 순 정렬 */
+  const slotsSorted=[...timeSlots].sort((a,b)=>b.count-a.count).filter(s=>s.count>0);
+  /* 속도 분석: 투두당 평균 뽀모 수가 적을수록 빠름 */
+  const speedArr=Object.values(projSpeed)
+    .filter(p=>p.done>0&&p.pomos>0)
+    .map(p=>({...p,avgPomo:p.pomos/p.done}))
+    .sort((a,b)=>a.avgPomo-b.avgPomo);
+  const fastest=speedArr[0]||null;
+  const slowest=speedArr[speedArr.length-1]||null;
+  /* 태그별 속도 */
+  const tagSpeedMap={};
+  for(const p of Object.values(projSpeed)){
+    if(p.done===0||p.pomos===0)continue;
+    const tn=tagMap2[p.tagId]?tagMap2[p.tagId].name:"기타";
+    if(!tagSpeedMap[tn])tagSpeedMap[tn]={done:0,pomos:0};
+    tagSpeedMap[tn].done+=p.done;tagSpeedMap[tn].pomos+=p.pomos;
+  }
+  const tagSpeedArr=Object.entries(tagSpeedMap)
+    .map(([name,v])=>({name,avgPomo:v.pomos/v.done}))
+    .sort((a,b)=>a.avgPomo-b.avgPomo);
+  const fastestTag=tagSpeedArr[0]||null;
+  const slowestTag=tagSpeedArr[tagSpeedArr.length-1]||null;
+  /* 추천 시간대: 뽀모도로가 가장 많이 완료된 시간대 = 집중이 잘 되는 시간 */
+  const bestSlot=slotsSorted[0]||null;
+  return{totTodos,totPomos,weeks,topProjs,bestDow,hasData:totTodos>0||totPomos>0,
+    slotsSorted,fastest,slowest,fastestTag,slowestTag,bestSlot,perTag};
 }
 function reportPopupHTML(y,m){
   const r=monthReportData(y,m);
@@ -800,7 +874,51 @@ function reportPopupHTML(y,m){
           +'<span style="font-weight:800;color:var(--accent)">'+cnt+'개</span></div>';
       });
     }
-    h+='<p style="font-size:12px;color:var(--sub);margin:10px 0 0">가장 생산적인 요일: <b>'+DAY_NAMES[r.bestDow]+'요일</b></p>'
+    h+='<p style="font-size:12px;color:var(--sub);margin:10px 0 0">가장 생산적인 요일: <b>'+DAY_NAMES[r.bestDow]+'요일</b></p>';
+    if(r.slotsSorted.length){
+      const maxSC=r.slotsSorted[0].count;
+      h+='<div style="border-top:1px solid var(--line);margin-top:12px;padding-top:12px">'
+        +'<div style="font-size:12px;font-weight:800;color:var(--sub);margin-bottom:8px">🕐 뽀모도로 시간대 패턴</div>';
+      r.slotsSorted.forEach((s,i)=>{
+        const pct=Math.round(s.count/r.totPomos*100);
+        const barW=Math.max(4,Math.round(s.count/maxSC*100));
+        h+='<div style="margin-bottom:6px">'
+          +'<div class="row" style="gap:6px;margin-bottom:2px">'
+          +'<span style="font-size:11px;font-weight:700;width:88px;flex-shrink:0;color:'+(i===0?'var(--accent)':'var(--ink)')+'">'+esc(s.label)+'</span>'
+          +'<span style="font-size:11px;color:var(--sub)">'+s.count+'회 ('+pct+'%)</span>'
+          +(i===0?'<span style="font-size:10px;font-weight:800;color:var(--accent);margin-left:auto">최고 집중 ★</span>':'')
+          +'</div>'
+          +'<div style="height:7px;border-radius:4px;background:var(--line);overflow:hidden">'
+          +'<div style="height:100%;border-radius:4px;background:'+(i===0?'var(--accent)':'#C5CCE8')+';width:'+barW+'%"></div></div></div>';
+      });
+      h+='</div>';
+    }
+    if(r.fastest||r.fastestTag){
+      h+='<div style="border-top:1px solid var(--line);margin-top:12px;padding-top:12px">'
+        +'<div style="font-size:12px;font-weight:800;color:var(--sub);margin-bottom:8px">⚡ 처리 속도 분석 (뽀모 기준)</div>';
+      if(r.fastest)h+='<div class="row" style="gap:6px;padding:5px 0;flex-wrap:wrap">'
+        +'<span style="font-size:18px">🚀</span>'
+        +'<div style="min-width:0"><div style="font-size:12px;font-weight:800;color:var(--good)">가장 빠른 프로젝트</div>'
+        +'<div style="font-size:13px;font-weight:600">'+esc(r.fastest.name)+'</div>'
+        +'<div style="font-size:11px;color:var(--sub)">투두당 평균 '+r.fastest.avgPomo.toFixed(1)+'🍅</div></div></div>';
+      if(r.slowest&&r.slowest.name!==r.fastest?.name)h+='<div class="row" style="gap:6px;padding:5px 0;flex-wrap:wrap">'
+        +'<span style="font-size:18px">🐢</span>'
+        +'<div style="min-width:0"><div style="font-size:12px;font-weight:800;color:var(--danger)">가장 느린 프로젝트</div>'
+        +'<div style="font-size:13px;font-weight:600">'+esc(r.slowest.name)+'</div>'
+        +'<div style="font-size:11px;color:var(--sub)">투두당 평균 '+r.slowest.avgPomo.toFixed(1)+'🍅</div></div></div>';
+      if(r.fastestTag)h+='<div class="row" style="gap:6px;padding:5px 0;flex-wrap:wrap">'
+        +'<div style="min-width:0"><div style="font-size:11px;font-weight:800;color:var(--sub)">태그 기준</div>'
+        +'<div style="font-size:12px">빠름: <b>'+esc(r.fastestTag.name)+'</b>'+(r.slowestTag&&r.slowestTag.name!==r.fastestTag.name?' · 느림: <b>'+esc(r.slowestTag.name)+'</b>':'')+'</div></div></div>';
+      h+='</div>';
+    }
+    if(r.bestSlot){
+      const bestDowTxt=DAY_NAMES[r.bestDow]+'요일';
+      h+='<div style="border-top:1px solid var(--line);margin-top:12px;padding-top:12px;background:var(--accent-soft);border-radius:10px;padding:12px;margin-top:12px">'
+        +'<div style="font-size:12px;font-weight:800;color:var(--accent);margin-bottom:6px">💡 이번 달 기록 기반 추천</div>'
+        +'<div style="font-size:13px;font-weight:700;margin-bottom:4px">중요한 일은 <b>'+esc(r.bestSlot.label)+'</b>에 배치하세요</div>'
+        +'<div style="font-size:12px;color:var(--sub)">이 시간대에 뽀모도로를 가장 많이 완료했어요 ('+r.bestSlot.count+'회). '
+        +bestDowTxt+'에 가장 많은 투두를 처리했으니, <b>'+bestDowTxt+' '+esc(r.bestSlot.label)+'</b> 조합이 최고의 집중 구간이에요.</div></div>';
+    }
       +'<button class="btn gray" style="margin-top:12px" onclick="A.reportDownload('+y+','+m+')">보고서 파일로 저장</button>';
   }
   h+='</div></div>';
@@ -1746,6 +1864,14 @@ const A={
     if(r.topProjs.length){txt+="\n프로젝트 순위:\n";
       r.topProjs.forEach(([n,c],i)=>{txt+="  "+(i+1)+". "+n+" — "+c+"개\n";});}
     txt+="\n가장 생산적인 요일: "+DAY_NAMES[r.bestDow]+"요일\n";
+    if(r.slotsSorted.length){txt+="\n[뽀모도로 시간대 패턴]\n";
+      r.slotsSorted.forEach(s=>{const p=Math.round(s.count/r.totPomos*100);txt+="  "+s.label+": "+s.count+"회 ("+p+"%)\n";});}
+    if(r.fastest)txt+="\n[처리 속도]\n  가장 빠른 프로젝트: "+r.fastest.name+" (투두당 "+r.fastest.avgPomo.toFixed(1)+"🍅)\n";
+    if(r.slowest&&r.slowest.name!==r.fastest?.name)txt+="  가장 느린 프로젝트: "+r.slowest.name+" (투두당 "+r.slowest.avgPomo.toFixed(1)+"🍅)\n";
+    if(r.fastestTag)txt+="  빠른 태그: "+r.fastestTag.name;
+    if(r.slowestTag&&r.slowestTag.name!==r.fastestTag?.name)txt+=" / 느린 태그: "+r.slowestTag.name;
+    txt+="\n";
+    if(r.bestSlot)txt+="\n[추천] 중요한 일은 "+r.bestSlot.label+" ("+DAY_NAMES[r.bestDow]+"요일)에 집중하세요.\n";
     const blob=new Blob([txt],{type:"text/plain;charset=utf-8"});
     const a=document.createElement("a");a.href=URL.createObjectURL(blob);
     a.download="planner-report-"+y+"-"+String(m+1).padStart(2,"0")+".txt";a.click();
