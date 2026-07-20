@@ -124,7 +124,10 @@ body.editing #screen-layer .sticker-item{pointer-events:auto}
 .todo-drag{cursor:grab;color:var(--sub);font-size:16px;padding:4px 8px;flex-shrink:0;touch-action:none;user-select:none}
 .todo-dragging{opacity:.4}
 .todo-dragover{border-top:2px solid var(--accent)}
-.todo-item.chained{border-left:3px solid var(--accent);margin-left:6px;padding-left:4px;border-radius:2px}
+.todo-part-group{border:2px solid var(--accent);border-radius:10px;padding:6px 4px;margin-bottom:4px;background:var(--accent-soft)}
+.todo-part-group .todo-item{background:var(--card);border-radius:7px;margin-bottom:3px}
+.todo-part-group .todo-item:last-child{margin-bottom:0}
+.todo-item.selected-todo{outline:2px solid var(--accent);border-radius:8px}
 nav{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--line);display:flex;justify-content:center;z-index:20}
 nav .inner{display:flex;width:100%;max-width:980px;overflow-x:auto}
 nav button{flex:1;min-width:80px;padding:13px 6px;border:none;background:none;font-size:14px;font-weight:500;color:var(--sub);border-top:2px solid transparent;white-space:nowrap}
@@ -235,7 +238,7 @@ function migrate(d){
       if(!("deadline"in p))p.deadline=null;
       if(!("dailyCap"in p))p.dailyCap=null; // 프로젝트별 하루 최대 시간
       p.todos=p.todos||[];
-      p.todos.forEach(t=>{if(!("doneAt"in t))t.doneAt=null;if(!("order"in t))t.order=0;});
+      p.todos.forEach(t=>{if(!("doneAt"in t))t.doneAt=null;if(!("order"in t))t.order=0;if(!("forceToday"in t))t.forceToday=false;if(!("pomos"in t))t.pomos=0;});
       p.todos.forEach((t,i)=>{t.order=i;});
     });
     // tabs: 누락된 섹션 보완
@@ -391,11 +394,12 @@ function buildTodayPlan(sim){
       const allocH=sim.todayAlloc[p.id]||0;
       if(allocH<=0)continue;
       /* 미완료 투두만 (order 순 정렬) */
-      const pool=p.todos.filter(t=>!t.done).sort((a,b)=>(a.order??0)-(b.order??0));
-      /* 오늘 이미 완료한 것도 포함 (체크 취소 가능하게) */
+      /* forceToday 투두는 항상 맨 앞에 (2번) */
+      const forcedPool=p.todos.filter(t=>!t.done&&t.forceToday).sort((a,b)=>(a.order??0)-(b.order??0));
+      const normalPool=p.todos.filter(t=>!t.done&&!t.forceToday).sort((a,b)=>(a.order??0)-(b.order??0));
       const doneTodayPool=p.todos.filter(t=>t.done&&t.doneAt===tk).sort((a,b)=>(a.order??0)-(b.order??0));
-      const fullPool=[...doneTodayPool,...pool];
-      let cnt=Math.min(Math.ceil(allocH/p.hoursPerTodo-1e-9),fullPool.length);
+      const fullPool=[...doneTodayPool,...forcedPool,...normalPool];
+      let cnt=Math.min(Math.ceil(allocH/p.hoursPerTodo-1e-9)+forcedPool.length,fullPool.length);
       /* 파트(묶음) 고려 (5번): 다음 투두가 사슬로 이어져 있으면 함께 포함 */
       while(cnt>0&&cnt<fullPool.length&&fullPool[cnt].chain)cnt++;
       for(let i=0;i<cnt;i++)q.push({todo:fullPool[i],projectId:p.id,projName:p.name,
@@ -445,6 +449,13 @@ const tagMap=()=>Object.fromEntries(data.tags.map(t=>[t.id,t]));
 const pomoCountToday=bid=>(data.pomoLog[todayKey()]||{})[bid]||0;
 
 /* ── 최소 일당 시간 계산 (6번) ── */
+function projAvgPomoMin(p){
+  /* 완료된 투두 중 pomos>0인 것들의 평균 뽀모 × 집중 시간 (분) */
+  const done=p.todos.filter(t=>t.done&&t.pomos>0);
+  if(!done.length)return null;
+  const avgPomos=done.reduce((s,t)=>s+t.pomos,0)/done.length;
+  return Math.round(avgPomos*data.pomodoro.work); /* 분 */
+}
 function calcMinDailyHours(p,sim){
   if(p.todos.filter(t=>!t.done).length===0)return null;
   if(!p.deadline)return null;
@@ -1010,7 +1021,9 @@ function behindListHTML(behind,compact){
       +showItems.map(t=>'<div class="todo'+(t.done?" done":"")+'">'
         +'<button class="check" style="'+(t.done?"background:"+g.tagColor+";border-color:"+g.tagColor:"")+'" onclick="A.toggleTodo(\''+g.projectId+'\',\''+t.id+'\')">'+( t.done?"✓":"")+'</button>'
         +'<div style="min-width:0;flex:1"><div class="todo-text" style="font-size:13px">'+esc(t.text)+'</div>'
-        +'<div class="todo-sub">'+fmtDur(g.hours)+'</div></div></div>').join("")
+        +'<div class="todo-sub">'+fmtDur(g.hours)+(t.pomos?' · 🍅'+t.pomos:'')+'</div></div>'
+        +(!t.done?'<button class="icon-btn" style="width:24px;height:24px;font-size:10px" title="이 투두로 뽀모도로" onclick="A.pomoTodo(\''+g.projectId+'\',\''+t.id+'\')">▶</button>':"")
+        +'</div>').join("")
       +(compact&&g.extraTodos.length>2?'<p class="hint" style="margin:2px 0 0">외 '+(g.extraTodos.length-2)+'개…</p>':"")
       +'</div>';
   }
@@ -1131,26 +1144,33 @@ function projListHTML(sim,tm){
         +'<input type="number" min="1" step="1" value="'+hpt2min(p.hoursPerTodo)+'" style="width:80px" onchange="A.pSetHpt(\''+p.id+'\',this.value)"></div></div>'
         +'<div class="row"><span style="font-size:11px;color:var(--sub);font-weight:700;flex-shrink:0;width:60px">마감</span><input type="date" value="'+(p.deadline||"")+'" style="flex:1" onchange="A.pDeadline(\''+p.id+'\',this.value)">'+(p.deadline?'<button class="icon-btn" onclick="A.pDeadline(\''+p.id+'\',null)">✕</button>':"")+'</div>'
         +'<div class="row"><span style="font-size:11px;color:var(--sub);font-weight:700;flex-shrink:0;width:60px">일 최대(h)</span><input type="number" min="0.5" step="0.5" value="'+(p.dailyCap||"")+'" placeholder="제한 없음" style="flex:1;text-align:left;padding:9px 11px" onchange="A.pSetCap(\''+p.id+'\',this.value)"></div>'
+        +(projAvgPomoMin(p)?'<div class="row" style="gap:6px;margin-bottom:6px;flex-wrap:wrap"><span style="font-size:12px;color:var(--sub)">실측 평균 <b>'+projAvgPomoMin(p)+'분</b> (기록 '+p.todos.filter(t=>t.done&&t.pomos>0).length+'개)</span><button class="chip-btn" onclick="A.pApplyAvg(\''+p.id+'\')" title="적용">적용</button><label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer"><input type="checkbox" '+(p.autoHpt?'checked':'')+' onchange="A.pAutoHpt(\''+p.id+'\',this.checked)">자동 조정</label></div>':'')
         +'<button class="btn gray" onclick="A.pEditToggle(\''+p.id+'\')">닫기</button></div>';
     }
     /* 투두 목록 (4번 드래그, 10번 자동 생성) */
     if(open){
       const sortedTodos=[...p.todos].sort((a,b)=>(a.order??0)-(b.order??0));
       h+='<div style="margin-left:23px;margin-top:8px;background:#FAFBFD;border:1px solid var(--line);border-radius:12px;padding:9px">';
+      /* 파트 박스 그룹 렌더링 (4번) */
+      const _partGroups=[];
       sortedTodos.forEach((t,ti)=>{
-        h+='<div class="todo-item'+(t.done?" done":"")+(t.chain?" chained":"")+'" data-tpid="'+p.id+'" data-tidx="'+ti+'">'
-          +'<div class="row" style="gap:6px;padding:5px 0">'
-          +'<span class="todo-drag" title="드래그로 순서 변경" '
-          +'onmousedown="tDragStart(event,\''+p.id+'\','+ti+')" '
-          +'ontouchstart="tDragStart(event,\''+p.id+'\','+ti+')">⠿</span>'
-          +(ti>0?'<button class="icon-btn'+(t.chain?'" style="background:var(--accent-soft);color:var(--accent);border-color:var(--accent)':'')+'" title="'+(t.chain?"묶음 해제":"이전 투두와 묶기 (연이어 처리)")+'" onclick="A.todoChain(\''+p.id+'\',\''+t.id+'\')" style="width:24px;height:24px;font-size:11px">⛓</button>':'<span style="width:24px;flex-shrink:0"></span>')
-          +'<button class="check" style="width:21px;height:21px;'+(t.done?"background:"+(tag?tag.color:"#888")+";border-color:"+(tag?tag.color:"#888"):"")+'" onclick="A.toggleTodo(\''+p.id+'\',\''+t.id+'\')">'+( t.done?"✓":"")+'</button>'
-          +'<input value="'+esc(t.text)+'" style="padding:6px 9px;font-size:13px;'+(t.done?"text-decoration:line-through;color:var(--sub)":"")+'" onchange="A.todoText(\''+p.id+'\',\''+t.id+'\',this.value)">'
-          +'<button class="icon-btn danger" style="width:24px;height:24px;font-size:11px" onclick="A.todoDel(\''+p.id+'\',\''+t.id+'\')">✕</button>'
-          +'</div></div>';
+        if(t.chain&&_partGroups.length)_partGroups[_partGroups.length-1].push({t,ti});
+        else _partGroups.push([{t,ti}]);
+      });
+      _partGroups.forEach(grp=>{
+        const isBox=grp.length>1||(grp.length===1&&grp[0].t.chain);
+        if(isBox)h+='<div class="todo-part-group">';
+        grp.forEach(({t,ti})=>{
+        h+='<div class="todo-item'+(t.done?" done":"")+(ui.selectedTodo&&ui.selectedTodo.pid===p.id&&ui.selectedTodo.tid===t.id?" selected-todo":"")+'" data-tpid="'+p.id+'" data-tidx="'+ti+'" onclick="A.todoSelect(event,\''+p.id+'\',\''+t.id+'\')">'          +'<div class="row" style="gap:6px;padding:5px 0">'          +'<span class="todo-drag" title="드래그로 순서 변경" '          +'onmousedown="tDragStart(event,\''+p.id+'\','+ti+')" '          +'ontouchstart="tDragStart(event,\''+p.id+'\','+ti+')">⠿</span>'          +(ti>0?'<button class="icon-btn'+(t.chain?'" style="background:var(--accent-soft);color:var(--accent);border-color:var(--accent)':'')+'" title="'+(t.chain?"묶음 해제":"이전 투두와 묶기 (연이어 처리)")+'" onclick="A.todoChain(\''+p.id+'\',\''+t.id+'\')">⛓</button>':'<span style="width:24px;flex-shrink:0"></span>')          +'<button class="check" style="width:21px;height:21px;'+(t.done?"background:"+(tag?tag.color:"#888")+";border-color:"+(tag?tag.color:"#888"):"")+'" onclick="A.toggleTodo(\''+p.id+'\',\''+t.id+'\')">'+( t.done?"✓":"")+'</button>'          +'<input value="'+esc(t.text)+'" style="padding:6px 9px;font-size:13px;'+(t.done?"text-decoration:line-through;color:var(--sub)":"")+'" onchange="A.todoText(\''+p.id+'\',\''+t.id+'\',this.value)">'          +(!t.done?'<button class="icon-btn'+(t.forceToday?'" style="background:var(--accent);color:#fff;border-color:var(--accent)':'')+'" title="'+(t.forceToday?"오늘 하기 취소":"오늘 하기")+'" onclick="A.todoForceToday(\''+p.id+'\',\''+t.id+'\')">⚡</button>':"")          +'<button class="icon-btn danger" style="width:24px;height:24px;font-size:11px" onclick="A.todoDel(\''+p.id+'\',\''+t.id+'\')">✕</button>'          +'</div></div>';
+        });
+        if(isBox)h+='</div>';
       });
       /* 단일 추가 */
-      h+='<div class="row" style="margin-top:6px"><input id="new-todo" placeholder="새 투두 추가 (엔터로 입력)" onkeydown="if(event.key===\'Enter\')A.todoAdd(\''+p.id+'\')">'
+      const _sh=ui.selectedTodo&&ui.selectedTodo.pid===p.id
+        ?'<span style="font-size:10px;color:var(--accent);font-weight:700;flex-shrink:0;white-space:nowrap">▼다음</span>' : '';
+      const _sc=ui.selectedTodo&&ui.selectedTodo.pid===p.id
+        ?'<button class="chip-btn" style="flex-shrink:0;padding:5px 6px;font-size:11px" onclick="A.todoSelect(event,null,null)">해제</button>' : '';
+      h+='<div class="row" style="margin-top:6px">'+_sh+'<input id="new-todo" placeholder="새 투두 추가 (엔터로 입력)" onkeydown="if(event.key===\'Enter\')A.todoAdd(\''+p.id+'\')">'+_sc
         +'<button class="btn" style="width:50px;flex-shrink:0;padding:8px 0;font-size:12px" onclick="A.todoAdd(\''+p.id+'\')">추가</button></div>';
       /* 자동 생성 (10번) */
       h+='<details style="margin-top:8px"><summary style="font-size:12px;color:var(--accent);font-weight:700;cursor:pointer">⚡ 번호 범위로 자동 생성</summary>'
@@ -1250,9 +1270,15 @@ function settingsHTML(){
     +'<details style="font-size:12px;color:var(--sub)"><summary style="cursor:pointer;font-weight:700">부팅 시 자동 실행 · 창 모드 설정법</summary>'
     +'<div style="line-height:1.8;margin-top:8px">'
     +'웹 앱 특성상 아래 항목은 기기(OS) 설정에서 지정합니다.<br><br>'
-    +'<b>독립 창으로 실행</b> — 브라우저에서 이 페이지를 열고 주소창의 설치 아이콘(PC) 또는 "홈 화면에 추가"(모바일)로 설치하면 주소창 없는 독립 창으로 열립니다.<br><br>'
-    +'<b>PC 부팅 시 자동 실행</b> — 앱 설치 후: Chrome 주소창에 chrome://apps 입력 → 블록 플래너 우클릭 → "로그인 시 앱 시작" 체크. 또는 Windows의 시작 프로그램 폴더(Win+R → shell:startup)에 앱 바로가기를 넣어도 됩니다.<br><br>'
-    +'<b>모바일</b> — 안드로이드/iOS는 보안상 부팅 자동 실행이 불가하지만, 홈 화면 첫 페이지에 두면 한 번의 탭으로 열립니다.'
+    +'<b>창 모드 선택 후 Windows 시작 파일 만들기</b><br>'
+    +'<div class="row" style="gap:6px;flex-wrap:wrap;margin:6px 0">'
+    +'<button class="chip-btn'+(data.launch&&data.launch.mode==="fullscreen"?" on":"")+'" onclick="A.setLaunchMode(\'fullscreen\')">전체화면</button>'
+    +'<button class="chip-btn'+(data.launch&&data.launch.mode==="maximized"?" on":"")+'" onclick="A.setLaunchMode(\'maximized\')">최대화</button>'
+    +'<button class="chip-btn'+(data.launch&&data.launch.mode==="normal"?" on":"")+'" onclick="A.setLaunchMode(\'normal\')">일반창</button>'
+    +'<button class="chip-btn'+(data.launch&&data.launch.mode==="small"?" on":"")+'" onclick="A.setLaunchMode(\'small\')">소형(480×820)</button></div>'
+    +'<button class="btn ghost" style="margin-bottom:8px" onclick="A.downloadVbs()">⬇ Windows 시작 파일(.vbs) 다운로드</button>'
+    +'시작 파일을 다운로드한 뒤 <b>Win+R → shell:startup</b> 폴더에 넣으면 Windows 부팅 시 자동으로 이 앱이 열립니다.<br><br>'
+    +'<b>Mac</b> — 시스템 설정 → 일반 → 로그인 항목에서 Chrome 앱으로 등록. <b>모바일</b> — 홈 화면에 추가 후 첫 페이지에 배치.'
     +'</div></details></div>'
     +'<p class="empty" style="margin-bottom:10px">'+modeText+'</p>'
     +'<div class="row"><button class="btn gray" onclick="A.exportData()">백업 내려받기</button><button class="btn gray" onclick="document.getElementById(\'import-file\').click()">백업 불러오기</button></div>'
@@ -1486,7 +1512,9 @@ const A={
   setProjView(v){data.projView=v;save();render();},
   toggleTodo(pid,tid){
     const p=data.projects.find(x=>x.id===pid),t=p.todos.find(x=>x.id===tid);
-    t.done=!t.done;t.doneAt=t.done?todayKey():null;save();render();},
+    t.done=!t.done;t.doneAt=t.done?todayKey():null;
+    if(p.autoHpt){const avg=projAvgPomoMin(p);if(avg){const r=Math.max(5,Math.round(avg/5)*5);p.hoursPerTodo=min2hpt(r);}}
+    save();render();},
   /* 컨테이너 */
   cDragStart(e,cid){e.dataTransfer.setData("text/plain",cid);e.dataTransfer.effectAllowed="move";},
   cDrop(e,panel){e.preventDefault();document.querySelectorAll(".panel").forEach(p=>p.classList.remove("droptarget"));const cid=e.dataTransfer.getData("text/plain");if(!cid||!SECTION_LABELS[cid])return;const tab=curTab();tab.aux=tab.aux.filter(c=>c!==cid);tab.main=tab.main.filter(c=>c!==cid);tab[panel].push(cid);save();render();},
@@ -1601,13 +1629,44 @@ const A={
   pSetTag(id,v){const p=data.projects.find(x=>x.id===id);if(p){p.tagId=v;save();render();}},
   pSetHpt(id,v){const p=data.projects.find(x=>x.id===id);if(p){p.hoursPerTodo=min2hpt(parseInt(v)||60);save();render();}},
   pSetCap(id,v){const p=data.projects.find(x=>x.id===id);if(p){const n=parseFloat(v);p.dailyCap=isNaN(n)||n<=0?null:n;save();render();}},
+  pApplyAvg(id){
+    const p=data.projects.find(x=>x.id===id);if(!p)return;
+    const avg=projAvgPomoMin(p);if(!avg)return;
+    /* 5분 단위 반올림 */
+    const rounded=Math.max(5,Math.round(avg/5)*5);
+    p.hoursPerTodo=min2hpt(rounded);save();render();},
+  pAutoHpt(id,v){
+    const p=data.projects.find(x=>x.id===id);if(!p)return;
+    p.autoHpt=!!v;if(v)A.pApplyAvg(id);else{save();render();}},
   pDeadline(id,v){const p=data.projects.find(x=>x.id===id);if(p){p.deadline=v||null;save();render();}},
   todoText(pid,tid,v){data.projects.find(p=>p.id===pid).todos.find(t=>t.id===tid).text=v;save();},
   /* 이전 투두와 묶기 토글 (5번) */
   todoChain(pid,tid){const t=data.projects.find(p=>p.id===pid).todos.find(x=>x.id===tid);
     t.chain=!t.chain;save();render();},
+  todoSelect(e,pid,tid){
+    if(e&&e.target&&(e.target.closest('button')||e.target.closest('input')))return;
+    if(!pid){ui.selectedTodo=null;render();return;}
+    const _sp=data.projects.find(x=>x.id===pid);
+    const _st=_sp?_sp.todos.find(x=>x.id===tid):null;
+    if(ui.selectedTodo&&ui.selectedTodo.pid===pid&&ui.selectedTodo.tid===tid)ui.selectedTodo=null;
+    else ui.selectedTodo={pid,tid,text:_st?_st.text.slice(0,8):""};
+    render();},
+  todoForceToday(pid,tid){
+    const t=data.projects.find(p=>p.id===pid)?.todos.find(x=>x.id===tid);
+    if(!t)return;t.forceToday=!t.forceToday;save();render();},
   todoDel(pid,tid){const p=data.projects.find(x=>x.id===pid);p.todos=p.todos.filter(t=>t.id!==tid);p.todos.forEach((t,i)=>t.order=i);save();render();},
-  todoAdd(pid){const el=document.getElementById("new-todo");const v=el?.value.trim();if(!v)return;const p=data.projects.find(x=>x.id===pid);p.todos.push({id:uid(),text:v,done:false,doneAt:null,order:p.todos.length});save();render();},
+  todoAdd(pid){const el=document.getElementById("new-todo");const v=el?.value.trim();if(!v)return;
+    const p=data.projects.find(x=>x.id===pid);
+    if(ui.selectedTodo&&ui.selectedTodo.pid===pid){
+      const sorted=[...p.todos].sort((a,b)=>(a.order??0)-(b.order??0));
+      const pos=sorted.findIndex(t=>t.id===ui.selectedTodo.tid);
+      const newT={id:uid(),text:v,done:false,doneAt:null,order:0,forceToday:false,pomos:0};
+      sorted.splice(pos<0?sorted.length:pos+1,0,newT);
+      sorted.forEach((t,i)=>t.order=i);
+      ui.selectedTodo={pid,tid:newT.id,text:v.slice(0,8)};
+    }else{p.todos.push({id:uid(),text:v,done:false,doneAt:null,order:p.todos.length,forceToday:false,pomos:0});}
+    if(el)el.value="";save();render();
+    setTimeout(()=>{const el2=document.getElementById("new-todo");if(el2)el2.focus();},60);},
   todoGenRange(pid){
     const prefix=document.getElementById("gen-prefix")?.value||"";
     const suffix=document.getElementById("gen-suffix")?.value||"";
@@ -1647,6 +1706,20 @@ const A={
   setFsFirstTap(v){
     if(!data.launch)data.launch={};
     data.launch.fsFirstTap=!!v;save();},
+  setLaunchMode(mode){
+    if(!data.launch)data.launch={};
+    data.launch.mode=mode;save();render();},
+  downloadVbs(){
+    const url=location.href.split('?')[0];
+    const mode=data.launch&&data.launch.mode||"maximized";
+    const flags=mode==="fullscreen"?"--start-fullscreen"
+      :mode==="maximized"?"--start-maximized"
+      :mode==="small"?"--window-size=480,820"
+      :"";
+    const vbs="Set ws=CreateObject(\"WScript.Shell\")\r\nws.Run \"cmd /c start /min chrome.exe --app="+url+" "+flags+"\",0,False";
+    const blob=new Blob([vbs],{type:"text/plain"});
+    const a=document.createElement("a");a.href=URL.createObjectURL(blob);
+    a.download="블록플래너_자동실행.vbs";a.click();URL.revokeObjectURL(a.href);},
   /* 동기화 */
   syncConnect(){
     const url=document.getElementById("sy-url")?.value.trim();
