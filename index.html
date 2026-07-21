@@ -174,7 +174,7 @@ nav button.on{font-weight:800;color:var(--accent);border-top-color:var(--accent)
 const PALETTE=["#2B4EFF","#E8590C","#0FA36B","#9C36B5","#0B7285","#C2255C","#5F3DC4","#B08D00"];
 const DAY_NAMES=["일","월","화","수","목","금","토"];
 const WEEK_ORDER=[1,2,3,4,5,6,0];
-const SECTION_LABELS={"timetable":"오늘의 시간표","today-todos":"오늘의 투두","pomodoro":"뽀모도로","dday":"D-Day","sticker-board":"스티커 보드","blocks-settings":"하루 블록 설정","tags-settings":"태그 설정","pomodoro-timer":"🍅 타이머","pomodoro-stats":"📊 뽀모 분석","projects":"프로젝트","calendar":"달력","routine":"🔄 루틴"};
+const SECTION_LABELS={"timetable":"오늘의 시간표","today-todos":"오늘의 투두","today-events":"📅 오늘의 일정","pomodoro":"뽀모도로","dday":"D-Day","sticker-board":"스티커 보드","blocks-settings":"하루 블록 설정","tags-settings":"태그 설정","pomodoro-timer":"🍅 타이머","pomodoro-stats":"📊 뽀모 분석","projects":"프로젝트","calendar":"달력","routine":"🔄 루틴"};
 const DEFAULT_THEME={accent:"#2B4EFF",bg:"#F6F7F9",card:"#FFFFFF",ink:"#182035"};
 const uid=()=>Math.random().toString(36).slice(2,9);
 const todayKey=()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");};
@@ -205,10 +205,10 @@ const ui={tab:"main",edit:false,settingsOpen:false,openProject:null,addDDay:fals
 let saveTimer=null;
 
 const defaultTabs=()=>[
-  {id:"main",name:"메인",builtin:true,aux:["dday","pomodoro-timer","sticker-board"],main:["timetable","today-todos"]},
+  {id:"main",name:"메인",builtin:true,aux:["today-events","dday","pomodoro-timer","sticker-board"],main:["timetable","today-todos"]},
   {id:"plan",name:"계획",builtin:true,aux:["dday","pomodoro-timer","sticker-board"],main:["blocks-settings","tags-settings"]},
   {id:"project",name:"프로젝트",builtin:true,aux:["dday","pomodoro-timer","sticker-board"],main:["projects"]},
-  {id:"calendar",name:"달력",builtin:true,aux:[],main:["calendar"]}
+  {id:"calendar",name:"달력",builtin:true,aux:["today-events"],main:["calendar"]}
 ];
 function makeDefault(){
   const study={id:uid(),name:"공부",color:PALETTE[0],weekHours:{0:2,1:4,2:4,3:4,4:4,5:4,6:2}};
@@ -253,6 +253,15 @@ function migrate(d){
     (d.tabs||[]).forEach(tab=>{
       for(const k of all)if(!tab.aux.includes(k)&&!tab.main.includes(k)){}
     });
+  }
+  /* 항상 실행되는 보정: 일정 id·time 필드 및 오늘의 일정 패널 배치 */
+  d.events=d.events||[];
+  d.events.forEach(ev=>{if(!ev.id)ev.id=uid();if(!("time"in ev))ev.time=null;});
+  if(d.tabs&&!d.tabs.some(t=>(t.aux||[]).includes("today-events")||(t.main||[]).includes("today-events"))){
+    const mt=d.tabs.find(t=>t.id==="main")||d.tabs[0];
+    if(mt)(mt.aux=mt.aux||[]).unshift("today-events");
+    const ct=d.tabs.find(t=>t.id==="calendar");
+    if(ct&&ct!==mt)(ct.aux=ct.aux||[]).unshift("today-events");
   }
   return d;
 }
@@ -994,7 +1003,7 @@ function renderContainer(cid,compact,ctx){
   switch(cid){
     case"dday":body=cDDay(compact);break;case"pomodoro-timer":body=cPomoTimer(compact);break;case"pomodoro-stats":body=cPomoStats(compact);break;case"pomodoro":body=cPomoTimer(compact);break;
     case"sticker-board":body=cBoard(compact);break;case"timetable":body=cTimetable(compact,ctx);break;case"calendar":body=cCalendar(compact,ctx);break;case"routine":body=cRoutine(compact);break;
-    case"today-todos":body=cTodayTodos(compact,ctx);break;case"blocks-settings":body=cBlocksSettings(compact);break;
+    case"today-todos":body=cTodayTodos(compact,ctx);break;case"today-events":body=cTodayEvents(compact);break;case"blocks-settings":body=cBlocksSettings(compact);break;
     case"tags-settings":body=cTagsSettings(compact);break;case"projects":body=cProjects(compact,ctx);break;
     default:body='<p class="empty">알 수 없는 컨테이너</p>';
   }
@@ -1098,6 +1107,7 @@ function cCalendar(compact,ctx){
   const daysIn=new Date(cy,cm+1,0).getDate();
   const tm=tagMap();
   const evMap={};(data.events||[]).forEach(ev=>{evMap[ev.date]=evMap[ev.date]||[];evMap[ev.date].push(ev);});
+  Object.values(evMap).forEach(a=>a.sort((x,y)=>(x.time||"99:99").localeCompare(y.time||"99:99")));
   const dlMap={};data.projects.forEach(p=>{if(!p.deadline)return;const k=p.deadline;const[y2,m2]=k.split("-").map(Number);if(y2===cy&&m2-1===cm){dlMap[k]=dlMap[k]||[];dlMap[k].push(p);}});
   const doneMap={};data.projects.forEach(p=>{p.todos.forEach(t=>{if(t.done&&t.doneAt){const[y2,m2]=t.doneAt.split("-").map(Number);if(y2===cy&&m2-1===cm){doneMap[t.doneAt]=doneMap[t.doneAt]||[];doneMap[t.doneAt].push({text:t.text,proj:p.name});}}});});
   const todayStr=todayKey();
@@ -1127,7 +1137,7 @@ function cCalendar(compact,ctx){
     h+='<div onclick="A.calDayClick(\''+dStr+'\')" style="min-height:38px;padding:3px;border-radius:8px;cursor:pointer;background:'+(isSelected?"var(--accent)":isToday?"var(--accent-soft)":"transparent")+';border:1.5px solid '+(isSelected?"var(--accent)":isToday?"var(--accent)":"transparent")+'">'
       +'<div style="font-size:12px;font-weight:'+(isToday||isSelected?"900":"600")+';text-align:center;color:'+(isSelected?"#fff":isToday?"var(--accent)":dow===0?"var(--danger)":dow===6?"var(--accent)":"var(--ink)")+'">'+d+'</div>';
     if(dotColor)h+='<div style="width:6px;height:6px;border-radius:50%;background:'+(isSelected?"rgba(255,255,255,.8)":dotColor)+';margin:1px auto"></div>';
-    if(mode==="events"&&hasEv)h+=evMap[dStr].slice(0,1).map(ev=>'<div style="font-size:9px;color:'+(isSelected?"#fff":ev.color)+';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700">'+esc(ev.title)+'</div>').join("");
+    if(mode==="events"&&hasEv)h+=evMap[dStr].slice(0,1).map(ev=>'<div style="font-size:9px;color:'+(isSelected?"#fff":ev.color)+';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700">'+(ev.time?ev.time+' ':'')+esc(ev.title)+'</div>').join("");
     h+='</div>';
   }
   h+='</div>';
@@ -1146,11 +1156,39 @@ function cCalendar(compact,ctx){
       }
       if(!(dlMap[ds]&&dlMap[ds].length)&&!(doneMap[ds]&&doneMap[ds].length))h+='<p style="font-size:12px;color:var(--sub)">이 날에는 기록이 없어요.</p>';
     }else{
-      if(evMap[ds]&&evMap[ds].length)h+=evMap[ds].map((ev,ei)=>'<div class="row" style="gap:6px;padding:3px 0"><span style="font-size:13px;color:'+ev.color+';font-weight:700">'+esc(ev.title)+'</span><button class="icon-btn danger" style="width:20px;height:20px;font-size:10px;margin-left:auto" onclick="A.eventDel(\''+ds+'\','+ei+')">&#10005;</button></div>').join("");
+      if(evMap[ds]&&evMap[ds].length)h+=evMap[ds].map(ev=>'<div class="row" style="gap:5px;padding:3px 0">'
+        +'<input type="color" value="'+(ev.color||'#2B4EFF')+'" title="색상 변경" onchange="A.eventColor(\''+ev.id+'\',this.value)" style="width:22px;height:22px;padding:0;border:none;border-radius:5px;background:none;cursor:pointer;flex-shrink:0">'
+        +'<input type="time" value="'+(ev.time||'')+'" title="시간 (비우면 종일)" onchange="A.eventTime(\''+ev.id+'\',this.value)" style="width:76px;padding:4px 5px;font-size:11px;flex-shrink:0">'
+        +'<input value="'+esc(ev.title)+'" title="내용 편집" onchange="A.eventTitle(\''+ev.id+'\',this.value)" style="flex:1;min-width:0;padding:5px 8px;font-size:13px;font-weight:700;color:'+(ev.color||'var(--ink)')+'">'
+        +'<button class="icon-btn danger" style="width:22px;height:22px;font-size:10px;flex-shrink:0" onclick="A.eventDel(\''+ev.id+'\')">&#10005;</button></div>').join("");
       if(!(evMap[ds]&&evMap[ds].length))h+='<p style="font-size:12px;color:var(--sub)">등록된 일정이 없어요.</p>';
-      h+='<div class="row" style="gap:6px;margin-top:6px"><input id="ev-input" placeholder="일정 입력 (엔터)" onkeydown="if(event.key===\'Enter\')A.eventAdd(\''+ds+'\')" style="flex:1;padding:8px;font-size:13px"><input type="color" id="ev-color" value="#2B4EFF" style="width:36px;height:36px;border-radius:8px;cursor:pointer;border:1px solid var(--line)"><button class="btn" onclick="A.eventAdd(\''+ds+'\')" style="width:48px">추가</button></div>';
+      h+='<div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap"><input id="ev-input" placeholder="일정 내용 (엔터로 추가)" onkeydown="if(event.key===\'Enter\')A.eventAdd(\''+ds+'\')" style="flex:1;min-width:110px;padding:8px;font-size:13px"><input type="time" id="ev-time" title="시간 (선택)" style="width:86px;padding:6px 5px;font-size:12px;flex-shrink:0"><input type="color" id="ev-color" value="#2B4EFF" style="width:36px;height:36px;border-radius:8px;cursor:pointer;border:1px solid var(--line);flex-shrink:0"><button class="btn" onclick="A.eventAdd(\''+ds+'\')" style="width:48px;flex-shrink:0">추가</button></div>'
+        +'<p class="hint" style="margin:4px 0 0;font-size:10px">시간을 비워두면 종일 일정이 되고, 추가 후에도 색·시간·내용을 바로 고칠 수 있어요.</p>';
     }
     h+='</div>';
+  }
+  return h;
+}
+/* ── 오늘의 일정 패널: 달력 일정과 시간대 연계 ── */
+function cTodayEvents(compact){
+  const tk=todayKey();
+  const evs=(data.events||[]).filter(ev=>ev.date===tk)
+    .sort((x,y)=>(x.time||"99:99").localeCompare(y.time||"99:99"));
+  let h='<div class="card-head"><h2 class="card-title">📅 오늘의 일정</h2>'
+    +'<button class="chip-btn" style="margin-left:auto" onclick="A.gotoTodayCal()">달력에서 보기</button></div>';
+  if(!evs.length){
+    h+='<p class="empty" style="font-size:12px">오늘 등록된 일정이 없어요. 달력의 일정 모드에서 추가해보세요.</p>';
+    return h;
+  }
+  const n=new Date();
+  const nowHM=String(n.getHours()).padStart(2,"0")+":"+String(n.getMinutes()).padStart(2,"0");
+  for(const ev of evs){
+    const past=!!ev.time&&ev.time<nowHM;
+    h+='<div class="row" style="gap:8px;padding:5px 0'+(past?';opacity:.45':'')+'">'
+      +'<span style="width:4px;height:26px;border-radius:2px;background:'+(ev.color||'var(--accent)')+';flex-shrink:0"></span>'
+      +'<span style="font-size:11px;font-weight:800;color:'+(ev.color||'var(--accent)')+';width:44px;flex-shrink:0">'+(ev.time?esc(ev.time):'종일')+'</span>'
+      +'<span style="font-size:13px;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'+(past?';text-decoration:line-through':'')+'">'+esc(ev.title)+'</span>'
+      +'</div>';
   }
   return h;
 }
@@ -1853,11 +1891,29 @@ const A={
     const el=document.getElementById('ev-input');
     const v=el?el.value.trim():'';if(!v)return;
     const col=document.getElementById('ev-color')?.value||'#2B4EFF';
+    const time=document.getElementById('ev-time')?.value||null;
     if(!data.events)data.events=[];
-    data.events.push({id:uid(),date:ds,title:v,color:col});
+    data.events.push({id:uid(),date:ds,title:v,color:col,time});
     if(el)el.value='';save();render();},
-  eventDel(ds,idx){
-    data.events=(data.events||[]).filter((ev,i)=>!(ev.date===ds&&i===idx));
+  eventDel(id){
+    data.events=(data.events||[]).filter(ev=>ev.id!==id);
+    save();render();},
+  eventColor(id,v){
+    const ev=(data.events||[]).find(x=>x.id===id);if(!ev)return;
+    ev.color=v;save();render();},
+  eventTitle(id,v){
+    const ev=(data.events||[]).find(x=>x.id===id);if(!ev)return;
+    if(v&&v.trim())ev.title=v.trim();
+    save();render();},
+  eventTime(id,v){
+    const ev=(data.events||[]).find(x=>x.id===id);if(!ev)return;
+    ev.time=v||null;save();render();},
+  gotoTodayCal(){
+    const n=new Date();
+    data.calYear=n.getFullYear();data.calMonth=n.getMonth();data.calMode='events';
+    ui.calSelected=todayKey();
+    const t=(data.tabs||[]).find(t=>(t.main||[]).includes('calendar')||(t.aux||[]).includes('calendar'));
+    if(t)ui.tab=t.id;
     save();render();},
   /* ─── 루틴 핸들러 ─── */
   routineAdd(){
