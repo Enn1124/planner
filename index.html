@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>블록 플래너</title>
 <meta name="theme-color" content="#2B4EFF">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -18,14 +18,14 @@
   --line:#E6E9EF;--accent:#2B4EFF;--accent-soft:#EDF0FF;--danger:#C2255C;--good:#0FA36B;
 }
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);
+html{overflow-x:hidden}body{margin:0;background:var(--bg);color:var(--ink);overflow-x:hidden;
   font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif}
 #wrap{max-width:980px;margin:0 auto;padding:18px 16px 84px;position:relative}
 h1{font-size:20px;font-weight:800;letter-spacing:-.02em;margin:0}
 .topbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
 .badge{font-size:12px;color:var(--sub)}.badge.err{color:var(--danger)}
-#panels{display:grid;grid-template-columns:240px 1fr;gap:14px;align-items:start}
-@media(max-width:680px){#panels{grid-template-columns:1fr}}
+#panels{display:grid;grid-template-columns:240px 1fr;gap:14px;align-items:start;max-width:100%;box-sizing:border-box}
+@media(max-width:680px){#panels{grid-template-columns:1fr;width:100%;overflow-x:hidden}#panel-aux{display:none}#panel-aux.mobile-show{display:block!important}#panel-main.mobile-hide{display:none}nav button.mobile-aux-btn{background:#EDF0FF;color:var(--accent)}.card{max-width:100%;box-sizing:border-box}}
 .panel{display:flex;flex-direction:column;gap:12px}
 .panel.droptarget{outline:2px dashed var(--accent);outline-offset:4px;background:var(--accent-soft);border-radius:12px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;position:relative}
@@ -137,8 +137,8 @@ nav button.on{font-weight:800;color:var(--accent);border-top-color:var(--accent)
 #settings-pop{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:14px}
 .overdue-chip{font-size:10px;font-weight:800;background:#FFF0F3;color:var(--danger);border:1px solid #FFD6DF;border-radius:6px;padding:2px 6px;white-space:nowrap}
 /* 주간 뽀모 차트 */
-.pomo-chart{display:flex;align-items:flex-end;gap:4px;height:60px;margin-top:8px}
-.pomo-bar-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;flex:1}
+.pomo-chart{display:flex;align-items:flex-end;gap:4px;height:72px;margin-top:6px}
+.pomo-bar-wrap{display:flex;flex-direction:column;align-items:center;gap:1px;flex:1;padding-top:16px;position:relative}
 .pomo-bar{width:100%;border-radius:4px 4px 0 0;min-height:3px;background:var(--accent);transition:height .3s}
 .pomo-bar-label{font-size:9px;color:var(--sub);font-weight:700}
 </style>
@@ -148,6 +148,7 @@ nav button.on{font-weight:800;color:var(--accent);border-top-color:var(--accent)
   <div class="topbar">
     <h1>블록 플래너</h1>
     <span class="badge" id="save-badge" style="margin-right:auto"></span>
+    <button class="chip-btn" id="decor-btn" onclick="A.decorToggle()">🎨</button>
     <button class="chip-btn" id="edit-btn" onclick="A.editToggle()">✎ 편집</button>
     <button class="chip-btn" onclick="A.settingsToggle()">⚙</button>
   </div>
@@ -173,7 +174,7 @@ nav button.on{font-weight:800;color:var(--accent);border-top-color:var(--accent)
 const PALETTE=["#2B4EFF","#E8590C","#0FA36B","#9C36B5","#0B7285","#C2255C","#5F3DC4","#B08D00"];
 const DAY_NAMES=["일","월","화","수","목","금","토"];
 const WEEK_ORDER=[1,2,3,4,5,6,0];
-const SECTION_LABELS={"timetable":"오늘의 시간표","today-todos":"오늘의 투두","pomodoro":"뽀모도로","dday":"D-Day","sticker-board":"스티커 보드","blocks-settings":"하루 블록 설정","tags-settings":"태그 설정","projects":"프로젝트","calendar":"달력"};
+const SECTION_LABELS={"timetable":"오늘의 시간표","today-todos":"오늘의 투두","pomodoro":"뽀모도로","dday":"D-Day","sticker-board":"스티커 보드","blocks-settings":"하루 블록 설정","tags-settings":"태그 설정","pomodoro-timer":"🍅 타이머","pomodoro-stats":"📊 뽀모 분석","projects":"프로젝트","calendar":"달력"};
 const DEFAULT_THEME={accent:"#2B4EFF",bg:"#F6F7F9",card:"#FFFFFF",ink:"#182035"};
 const uid=()=>Math.random().toString(36).slice(2,9);
 const todayKey=()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");};
@@ -204,9 +205,9 @@ const ui={tab:"main",edit:false,settingsOpen:false,openProject:null,addDDay:fals
 let saveTimer=null;
 
 const defaultTabs=()=>[
-  {id:"main",name:"메인",builtin:true,aux:["dday","pomodoro","sticker-board"],main:["timetable","today-todos"]},
-  {id:"plan",name:"계획",builtin:true,aux:["dday","pomodoro","sticker-board"],main:["blocks-settings","tags-settings"]},
-  {id:"project",name:"프로젝트",builtin:true,aux:["dday","pomodoro","sticker-board"],main:["projects"]},
+  {id:"main",name:"메인",builtin:true,aux:["dday","pomodoro-timer","sticker-board"],main:["timetable","today-todos"]},
+  {id:"plan",name:"계획",builtin:true,aux:["dday","pomodoro-timer","sticker-board"],main:["blocks-settings","tags-settings"]},
+  {id:"project",name:"프로젝트",builtin:true,aux:["dday","pomodoro-timer","sticker-board"],main:["projects"]},
   {id:"calendar",name:"달력",builtin:true,aux:[],main:["calendar"]}
 ];
 function makeDefault(){
@@ -237,6 +238,7 @@ function migrate(d){
     if(!d.calMode)d.calMode="todo";
     d.boardH=d.boardH||d.stickerBoardH||200;delete d.stickerBoardH;
     d.screenStickers=d.screenStickers||[];d.tabs=d.tabs||defaultTabs();
+    (d.tabs||[]).forEach(t=>{t.aux=(t.aux||[]).map(c=>c==="pomodoro"?"pomodoro-timer":c);t.main=(t.main||[]).map(c=>c==="pomodoro"?"pomodoro-timer":c);});
     d.theme=d.theme||{...DEFAULT_THEME};d.todoSort=d.todoSort||"block";d.projView=d.projView||"list";
     delete d.layout;
     d.projects.forEach(p=>{
@@ -963,7 +965,7 @@ function renderScreenLayer(){const layer=document.getElementById("screen-layer")
 function renderContainer(cid,compact,ctx){
   let body="";
   switch(cid){
-    case"dday":body=cDDay(compact);break;case"pomodoro":body=cPomo(compact);break;
+    case"dday":body=cDDay(compact);break;case"pomodoro-timer":body=cPomoTimer(compact);break;case"pomodoro-stats":body=cPomoStats(compact);break;case"pomodoro":body=cPomoTimer(compact);break;
     case"sticker-board":body=cBoard(compact);break;case"timetable":body=cTimetable(compact,ctx);break;case"calendar":body=cCalendar(compact,ctx);break;
     case"today-todos":body=cTodayTodos(compact,ctx);break;case"blocks-settings":body=cBlocksSettings(compact);break;
     case"tags-settings":body=cTagsSettings(compact);break;case"projects":body=cProjects(compact,ctx);break;
@@ -1062,18 +1064,9 @@ function cCalendar(compact,ctx){
   }
   return h;
 }
-function cPomo(compact){
+function cPomoTimer(compact){
   const C=2*Math.PI*48;
-  /* 주간 차트 데이터 */
-  const today=todayDate();
-  const weekData=Array.from({length:7},(_,i)=>{
-    const d=new Date(today);d.setDate(d.getDate()-6+i);
-    const key=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
-    const count=Object.values(data.pomoLog[key]||{}).reduce((s,v)=>s+v,0);
-    return{label:DAY_NAMES[d.getDay()],count,isToday:key===todayKey()};
-  });
-  const maxC=Math.max(1,...weekData.map(w=>w.count));
-  let h='<div class="card-head"><h2 class="card-title">뽀모도로</h2><div class="row" style="gap:6px"><button class="chip-btn" onclick="A.reportOpen()">📊 월간</button><span class="badge" id="pomo-cycles">완료 '+pomo.cycles+'회</span></div></div>'
+  let h='<div class="card-head"><h2 class="card-title">🍅 타이머</h2><span class="badge" id="pomo-cycles">완료 '+pomo.cycles+'회</span></div>'
     +'<div class="pomo-wrap"><div class="pomo-dial">'
     +'<svg width="116" height="116" viewBox="0 0 116 116"><circle cx="58" cy="58" r="48" fill="none" stroke="#EEF0F5" stroke-width="8"></circle>'
     +'<circle id="pomo-ring" cx="58" cy="58" r="48" fill="none" stroke="'+esc(data.theme.accent)+'" stroke-width="8" stroke-linecap="round" stroke-dasharray="'+C+'" stroke-dashoffset="0" transform="rotate(-90 58 58)" style="transition:stroke-dashoffset .25s linear"></circle></svg>'
@@ -1085,35 +1078,47 @@ function cPomo(compact){
     +'<label class="numfield">집중(분)<input type="number" min="1" max="120" value="'+data.pomodoro.work+'" onchange="A.pomoSetWork(this.value)"></label>'
     +'<label class="numfield">휴식(분)<input type="number" min="1" max="60" value="'+data.pomodoro.rest+'" onchange="A.pomoSetRest(this.value)"></label>'
     +'<button class="icon-btn" style="width:auto;padding:0 8px;height:36px;font-size:11px;font-weight:700" onclick="A.pomoSwitch()">전환</button>'
-    +'<button class="icon-btn" style="width:auto;padding:0 8px;height:36px;font-size:11px;font-weight:700" onclick="A.pomoUnlink()">해제</button></div>';
-  /* 주간 뽀모도로 차트 */
+    +'<button class="icon-btn" style="width:auto;padding:0 8px;height:36px;font-size:11px;font-weight:700" onclick="A.pomoUnlink()">해제</button></div>'
+    +'</div>';
+  return h;
+}
+function cPomoStats(compact){
+  const today=new Date();
+  const weekData=Array.from({length:7},(_,i)=>{
+    const d=new Date(today);d.setDate(d.getDate()-6+i);
+    const key=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+    const count=Object.values(data.pomoLog[key]||{}).reduce((s,v)=>s+v,0);
+    return{label:DAY_NAMES[d.getDay()],count,isToday:key===todayKey()};
+  });
+  const maxC=Math.max(1,...weekData.map(w=>w.count));
+  let h='<div class="card-head"><h2 class="card-title">📊 뽀모 분석</h2>'
+    +'<button class="chip-btn" onclick="A.reportOpen()">📈 월간</button></div>';
   h+='<div style="width:100%"><div style="font-size:11px;color:var(--sub);font-weight:700;margin-bottom:4px">🍅 뽀모도로 · 최근 7일</div>'
     +'<div class="pomo-chart">'
     +weekData.map(w=>'<div class="pomo-bar-wrap">'
-      +'<div style="font-size:10px;color:'+(w.count>0?'var(--accent)':'var(--sub)')+';font-weight:800;margin-bottom:2px">'+(w.count>0?w.count:"")+'</div>'
+      +'<div style="position:absolute;top:0;font-size:10px;color:'+(w.count>0?'var(--accent)':'var(--sub)')+';font-weight:800;width:100%;text-align:center">'+(w.count>0?w.count:'')+'</div>'
       +'<div class="pomo-bar" style="height:'+Math.max(3,Math.round(w.count/maxC*48))+'px;background:'+(w.isToday?'var(--accent)':'#C5CCE8')+'"></div>'
       +'<div class="pomo-bar-label" style="color:'+(w.isToday?'var(--accent)':'var(--sub)')+'">'+w.label+'</div>'
       +'</div>').join("")
     +'</div></div>';
-  /* 주간 완료 투두 차트 (3번) — todo.doneAt 기준 집계 */
   const todoWeek=Array.from({length:7},(_,i)=>{
     const d=new Date(today);d.setDate(d.getDate()-6+i);
     const key=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
-    let count=0;
-    for(const p of data.projects)for(const t of p.todos)if(t.done&&t.doneAt===key)count++;
+    let count=0;for(const p of data.projects)for(const t of p.todos)if(t.done&&t.doneAt===key)count++;
     return{label:DAY_NAMES[d.getDay()],count,isToday:key===todayKey()};
   });
   const maxT=Math.max(1,...todoWeek.map(w=>w.count));
-  h+='<div style="width:100%;margin-top:6px"><div style="font-size:11px;color:var(--sub);font-weight:700;margin-bottom:4px">✓ 완료한 투두 · 최근 7일</div>'
+  h+='<div style="width:100%;margin-top:8px"><div style="font-size:11px;color:var(--sub);font-weight:700;margin-bottom:4px">✓ 완료한 투두 · 최근 7일</div>'
     +'<div class="pomo-chart">'
     +todoWeek.map(w=>'<div class="pomo-bar-wrap">'
-      +'<div style="font-size:10px;color:'+(w.count>0?'var(--good)':'var(--sub)')+';font-weight:800;margin-bottom:2px">'+(w.count>0?w.count:"")+'</div>'
+      +'<div style="position:absolute;top:0;font-size:10px;color:'+(w.count>0?'var(--good)':'var(--sub)')+';font-weight:800;width:100%;text-align:center">'+(w.count>0?w.count:'')+'</div>'
       +'<div class="pomo-bar" style="height:'+Math.max(3,Math.round(w.count/maxT*48))+'px;background:'+(w.isToday?'var(--good)':'#BFE3D2')+'"></div>'
       +'<div class="pomo-bar-label" style="color:'+(w.isToday?'var(--good)':'var(--sub)')+'">'+w.label+'</div>'
       +'</div>').join("")
     +'</div></div>';
-  return h+'</div>';
+  return h;
 }
+function cPomo(compact){return cPomoTimer(compact);}
 
 /* ── 보드 ── */
 function cBoard(compact){
@@ -1122,7 +1127,7 @@ function cBoard(compact){
   let h='<div class="card-head"><h2 class="card-title">보드</h2></div>'
     +'<div id="board" class="sticker-scope" style="height:'+boardH+'px">'
     +(data.boardStickers.length===0?'<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--sub);pointer-events:none">편집 모드에서 꾸며 보세요 ✦</div>':"")
-    +data.boardStickers.map(s=>stickerHTML(s,"board")).join("")+'</div>';
+    +(data.decor?data.boardStickers.map(s=>stickerHTML(s,"board")).join(""):"") +'</div>';
   if(ui.edit)h+='<div style="display:flex;flex-direction:column;gap:7px;margin-top:10px">'
     +'<div class="row" style="flex-wrap:wrap;gap:6px">'
     +'<button class="chip-btn" onclick="document.getElementById(\'b-file\').click()">🖼 이미지</button>'
@@ -1443,13 +1448,25 @@ function render(){
   document.body.classList.toggle("editing",ui.edit);
   document.getElementById("edit-btn").className="chip-btn"+(ui.edit?" on":"");
   document.getElementById("edit-btn").textContent=ui.edit?"✓ 편집 완료":"✎ 편집";
-  document.getElementById("tabbar").innerHTML=data.tabs.map(t=>'<button class="'+(ui.tab===t.id?"on":"")+'" onclick="A.tab(\''+t.id+'\')">'+esc(t.name)+'</button>').join("")+(ui.edit?'<button style="color:var(--accent);font-weight:800" onclick="A.tabAdd()">＋</button>':"");
+  const _db=document.getElementById("decor-btn");if(_db){_db.className="chip-btn"+(data.decor?" on":"");_db.textContent=data.decor?"🎨":"🚫";}
+  const _mob6=window.innerWidth<=680;
+  const _auxBtn=_mob6?'<button class="'+(ui.mobilePanel==="aux"?"on":"")+ ' mobile-aux-btn" onclick="A.mobileAuxToggle()">☰ 보조</button>':'';
+  document.getElementById("tabbar").innerHTML=_auxBtn+data.tabs.map((t,ti)=>{
+    const _dd=ui.edit?' draggable="true" ondragstart="A.tabDragStart(event,'+ti+')" ondragover="event.preventDefault()" ondrop="A.tabDrop(event,'+ti+')" ondragend="A.tabDragEnd()"':'';
+    const _st=ui.edit&&ui.tabDragIdx===ti?'opacity:.5;outline:2px dashed var(--accent)':'';
+    return '<button class="'+(ui.tab===t.id?"on":"")+'"'+_dd+' style="'+_st+'" onclick="A.tab(\''+t.id+'\')">'+esc(t.name)+'</button>';
+  }).join("")+(ui.edit?'<button style="color:var(--accent);font-weight:800" onclick="A.tabAdd()">＋</button>':"");
   document.getElementById("settings-slot").innerHTML=ui.settingsOpen?settingsHTML():"";
   document.getElementById("toolbar-slot").innerHTML=ui.edit?toolbarHTML():"";
   const tab=curTab(),sim=simulateAll(),plan=buildTodayPlan(sim),ctx={sim,plan};
   const aux=document.getElementById("panel-aux"),main=document.getElementById("panel-main");
   aux.innerHTML=tab.aux.map(cid=>renderContainer(cid,true,ctx)).join("")||'<div style="font-size:12px;color:var(--sub);text-align:center;padding:14px">보조 패널</div>';
   main.innerHTML=tab.main.map(cid=>renderContainer(cid,false,ctx)).join("")||'<div style="font-size:12px;color:var(--sub);text-align:center;padding:14px;border:1.5px dashed var(--line);border-radius:12px">편집 모드에서 컨테이너를 추가하세요</div>';
+  const _isMob=window.innerWidth<=680;
+  if(_isMob){
+    if(ui.mobilePanel==="aux"){aux.classList.add("mobile-show");main.classList.add("mobile-hide");}
+    else{aux.classList.remove("mobile-show");main.classList.remove("mobile-hide");}
+  }else{aux.classList.remove("mobile-show");main.classList.remove("mobile-hide");}
   aux.classList.remove("droptarget");main.classList.remove("droptarget");
   renderScreenLayer();pomoPaint();paintSync();
   /* 스타일 팝업 (3번) / 블록 투두 팝업 (4번) */
@@ -1745,6 +1762,10 @@ const A={
   cRemove(cid){const tab=curTab();tab.aux=tab.aux.filter(c=>c!==cid);tab.main=tab.main.filter(c=>c!==cid);save();render();},
   cAdd(cid){curTab().main.push(cid);save();render();},
   resetLayout(){if(!confirm("탭 구성을 기본 배치로 초기화할까요? (데이터는 유지)"))return;data.tabs=defaultTabs();ui.tab="main";save();render();},
+  tabDragStart(e,idx){ui.tabDragIdx=idx;e.dataTransfer.effectAllowed="move";},
+  tabDrop(e,idx){e.preventDefault();const from=ui.tabDragIdx;if(from==null||from===idx)return;const tabs=[...data.tabs];const[moved]=tabs.splice(from,1);tabs.splice(idx,0,moved);data.tabs=tabs;ui.tabDragIdx=null;save();render();},
+  tabDragEnd(){ui.tabDragIdx=null;render();},
+  mobileAuxToggle(){ui.mobilePanel=ui.mobilePanel==="aux"?"main":"aux";render();},
   tabAdd(){const name=prompt("새 탭 이름");if(!name||!name.trim())return;const id=uid();data.tabs.push({id,name:name.trim(),builtin:false,aux:[],main:[]});ui.tab=id;save();render();},
   tabRename(){const tab=curTab();if(tab.builtin)return;const name=prompt("탭 이름 변경",tab.name);if(!name||!name.trim())return;tab.name=name.trim();save();render();},
   tabDel(){const tab=curTab();if(tab.builtin)return;if(!confirm("'"+tab.name+"' 탭을 삭제할까요?"))return;data.screenStickers=data.screenStickers.filter(s=>s.tabId!==tab.id);data.tabs=data.tabs.filter(t=>t.id!==tab.id);ui.tab="main";save();render();},
@@ -1763,35 +1784,19 @@ const A={
   pomoUnlink(){pomo.blockId=null;pomo.todo=null;pomoPaint();},
   /* 조기 종료 (1번): 작업 완료 → 실제 경과 시간 기록 후 휴식 전환 */
   pomoFinishEarly(){
-    if(pomo.phase!=="work"||!pomo.running)return;
-    const elapsedMs=pomo.workStartAt?Date.now()-pomo.workStartAt:pomoDur("work");
-    const elapsedMin=Math.max(1,Math.round(elapsedMs/60000));
-    pomo.cycles++;
-    let dirty=false;
-    if(pomo.blockId){
-      const tk=todayKey();if(!data.pomoLog[tk])data.pomoLog[tk]={};
-      data.pomoLog[tk][pomo.blockId]=(data.pomoLog[tk][pomo.blockId]||0)+1;dirty=true;
-      const cEl=document.getElementById("pomocount-"+pomo.blockId);
-      if(cEl)cEl.textContent="🍅 "+pomoCountToday(pomo.blockId);
-    }
-    if(pomo.todo){
-      const p=data.projects.find(x=>x.id===pomo.todo.pid);
-      const t=p?p.todos.find(x=>x.id===pomo.todo.tid):null;
-      if(t){
-        t.pomos=(t.pomos||0)+1;
-        /* 실제 소요 분 누적 (평균 계산에 반영) */
-        t.actualMins=(t.actualMins||0)+elapsedMin;
-        dirty=true;
-        if(!pomo.blockId){const tk=todayKey();if(!data.pomoLog[tk])data.pomoLog[tk]={};
-          data.pomoLog[tk]["_todo"]=(data.pomoLog[tk]["_todo"]||0)+1;}
-        /* autoHpt: 완료 투두 있으면 실측 평균 재계산 */
-        if(p.autoHpt){const avg=projAvgPomoMinActual(p);if(avg){const r=Math.max(5,Math.round(avg/5)*5);p.hoursPerTodo=min2hpt(r);}}
-      }
-    }
-    if(dirty)store.set("planner-state",JSON.stringify(data));
-    pomo.workStartAt=null;
-    pomo.phase="rest";pomo.leftMs=pomoDur("rest");pomo.endAt=Date.now()+pomo.leftMs;
-    pomoPaint();
+    if(!pomo.running||pomo.phase!=="work")return;
+    const _em=pomo.workStartAt?Date.now()-pomo.workStartAt:pomoDur("work");
+    const _emin=Math.max(1,Math.round(_em/60000));
+    pomo.cycles++;let _dirty=false;
+    if(pomo.blockId){const _tk=todayKey();if(!data.pomoLog[_tk])data.pomoLog[_tk]={};
+      data.pomoLog[_tk][pomo.blockId]=(data.pomoLog[_tk][pomo.blockId]||0)+1;_dirty=true;}
+    if(pomo.todo){const _fp=data.projects.find(x=>x.id===pomo.todo.pid);
+      const _ft=_fp?_fp.todos.find(x=>x.id===pomo.todo.tid):null;
+      if(_ft){_ft.pomos=(_ft.pomos||0)+1;_ft.actualMins=(_ft.actualMins||0)+_emin;_dirty=true;
+        if(_fp.autoHpt){const _avg=projAvgPomoMin(_fp);if(_avg){const _r=Math.max(5,Math.round(_avg/5)*5);_fp.hoursPerTodo=min2hpt(_r);}}}}
+    if(_dirty)store.set("planner-state",JSON.stringify(data));
+    pomo.phase="rest";pomo.workStartAt=null;pomo.leftMs=pomoDur("rest");
+    pomo.endAt=Date.now()+pomo.leftMs;pomoPaint();
   },
   pomoSetWork(v){data.pomodoro.work=Math.max(1,Math.min(120,parseInt(v)||25));if(!pomo.running)pomo.leftMs=pomoDur(pomo.phase);save();pomoPaint();},
   pomoSetRest(v){data.pomodoro.rest=Math.max(1,Math.min(60,parseInt(v)||5));if(!pomo.running)pomo.leftMs=pomoDur(pomo.phase);save();pomoPaint();},
