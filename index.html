@@ -1051,7 +1051,7 @@ function cRoutine(compact){
     +'</div></div>';
 
   if(!data.routines||!data.routines.length){
-    h+='<p class="empty" style="font-size:12px">주기적으로 반복할 습관을 추가해봠세요.</p>';
+    h+='<p class="empty" style="font-size:12px">주기적으로 반복할 습관을 추가해보세요.</p>';
     return h;
   }
 
@@ -1070,7 +1070,7 @@ function cRoutine(compact){
     const isEvery=!r.days||r.days.length===0;
     h+='<div style="display:grid;grid-template-columns:1fr repeat(7,28px);gap:3px;align-items:center;margin-bottom:5px">'
       +'<div class="row" style="gap:4px;min-width:0">'
-      +'<span style="width:10px;height:10px;border-radius:3px;flex-shrink:0;background:'+(r.color||'var(--accent)')+'"></span>'
+      +'<input type="color" value="'+(r.color||'#2B4EFF')+'" title="색상 변경" onchange="A.routineColor(\''+r.id+'\',this.value)" style="width:16px;height:16px;padding:0;border:none;border-radius:4px;background:none;cursor:pointer;flex-shrink:0">'
       +'<span style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">'+esc(r.name)+'</span>'
       +(compact?'':'<button class="icon-btn danger" style="width:18px;height:18px;font-size:9px;flex-shrink:0" onclick="A.routineDel(\''+r.id+'\')">&#10005;</button>')
       +'</div>';
@@ -1103,7 +1103,7 @@ function cCalendar(compact,ctx){
   const todayStr=todayKey();
   let h='<div class="card-head">'
     +'<button class="icon-btn" onclick="A.calNav(-1)">&#9664;</button>'
-    +'<h2 class="card-title">'+cy+'&#45;'+(cm+1)+'&#47;</h2>'
+    +'<h2 class="card-title">'+cy+'년 '+(cm+1)+'월</h2>'
     +'<button class="icon-btn" onclick="A.calNav(1)">&#9654;</button>'
     +'<div style="margin-left:auto;display:flex;gap:6px">'
     +'<button class="chip-btn'+(mode==="todo"?" on":"")+'" onclick="A.setCalMode(\'todo\')">할일</button>'
@@ -1147,8 +1147,8 @@ function cCalendar(compact,ctx){
       if(!(dlMap[ds]&&dlMap[ds].length)&&!(doneMap[ds]&&doneMap[ds].length))h+='<p style="font-size:12px;color:var(--sub)">이 날에는 기록이 없어요.</p>';
     }else{
       if(evMap[ds]&&evMap[ds].length)h+=evMap[ds].map((ev,ei)=>'<div class="row" style="gap:6px;padding:3px 0"><span style="font-size:13px;color:'+ev.color+';font-weight:700">'+esc(ev.title)+'</span><button class="icon-btn danger" style="width:20px;height:20px;font-size:10px;margin-left:auto" onclick="A.eventDel(\''+ds+'\','+ei+')">&#10005;</button></div>').join("");
+      if(!(evMap[ds]&&evMap[ds].length))h+='<p style="font-size:12px;color:var(--sub)">등록된 일정이 없어요.</p>';
       h+='<div class="row" style="gap:6px;margin-top:6px"><input id="ev-input" placeholder="일정 입력 (엔터)" onkeydown="if(event.key===\'Enter\')A.eventAdd(\''+ds+'\')" style="flex:1;padding:8px;font-size:13px"><input type="color" id="ev-color" value="#2B4EFF" style="width:36px;height:36px;border-radius:8px;cursor:pointer;border:1px solid var(--line)"><button class="btn" onclick="A.eventAdd(\''+ds+'\')" style="width:48px">추가</button></div>';
-      if(!ui.groupSel||ui.groupSel.pid!==p.id)h+='<button class="chip-btn" style="margin-top:4px;width:100%;font-size:11px" onclick="A.groupStart(\'' + p.id + '\')">묶기 모드</button>';
     }
     h+='</div>';
   }
@@ -1495,6 +1495,8 @@ function projListHTML(sim,tm){
         ?'<button class="chip-btn" style="flex-shrink:0;padding:5px 6px;font-size:11px" onclick="A.todoSelect(event,null,null)">해제</button>' : '';
       h+='<div class="row" style="margin-top:6px">'+_sh+'<input id="new-todo" placeholder="새 투두 추가 (엔터로 입력)" onkeydown="if(event.key===\'Enter\')A.todoAdd(\''+p.id+'\')">'+_sc
         +'<button class="btn" style="width:50px;flex-shrink:0;padding:8px 0;font-size:12px" onclick="A.todoAdd(\''+p.id+'\')">추가</button></div>';
+      if(!_gsActive&&p.todos.filter(t=>!t.done).length>=2)
+        h+='<button class="chip-btn" style="margin-top:6px;width:100%;font-size:11px" onclick="A.groupStart(\''+p.id+'\')">📦 묶기 모드 — 투두를 골라 한 박스로</button>';
       /* 자동 생성 (10번) */
       h+='<details style="margin-top:8px"><summary style="font-size:12px;color:var(--accent);font-weight:700;cursor:pointer">⚡ 번호 범위로 자동 생성</summary>'
         +'<div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;padding:8px;background:#F6F7F9;border-radius:8px">'
@@ -1869,6 +1871,9 @@ const A={
   routineDel(id){
     if(!confirm('이 루틴을 삭제할까요?'))return;
     data.routines=(data.routines||[]).filter(r=>r.id!==id);save();render();},
+  routineColor(id,v){
+    const r=(data.routines||[]).find(x=>x.id===id);if(!r)return;
+    r.color=v;save();render();},
   routineCheck(id,ds){
     const r=(data.routines||[]).find(x=>x.id===id);if(!r)return;
     if(!r.log)r.log={};
