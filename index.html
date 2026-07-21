@@ -1148,6 +1148,7 @@ function cCalendar(compact,ctx){
     }else{
       if(evMap[ds]&&evMap[ds].length)h+=evMap[ds].map((ev,ei)=>'<div class="row" style="gap:6px;padding:3px 0"><span style="font-size:13px;color:'+ev.color+';font-weight:700">'+esc(ev.title)+'</span><button class="icon-btn danger" style="width:20px;height:20px;font-size:10px;margin-left:auto" onclick="A.eventDel(\''+ds+'\','+ei+')">&#10005;</button></div>').join("");
       h+='<div class="row" style="gap:6px;margin-top:6px"><input id="ev-input" placeholder="일정 입력 (엔터)" onkeydown="if(event.key===\'Enter\')A.eventAdd(\''+ds+'\')" style="flex:1;padding:8px;font-size:13px"><input type="color" id="ev-color" value="#2B4EFF" style="width:36px;height:36px;border-radius:8px;cursor:pointer;border:1px solid var(--line)"><button class="btn" onclick="A.eventAdd(\''+ds+'\')" style="width:48px">추가</button></div>';
+      if(!ui.groupSel||ui.groupSel.pid!==p.id)h+='<button class="chip-btn" style="margin-top:4px;width:100%;font-size:11px" onclick="A.groupStart(\'' + p.id + '\')">묶기 모드</button>';
     }
     h+='</div>';
   }
@@ -1475,13 +1476,19 @@ function projListHTML(sim,tm){
       });
       _partGroups.forEach(grp=>{
         const isBox=grp.length>1||(grp.length===1&&grp[0].t.chain);
-        if(isBox)h+='<div class="todo-part-group">';
+        if(isBox)h+='<div class="todo-part-group"><button class="chip-btn" style="font-size:10px;padding:2px 7px;margin-bottom:4px;display:block" onclick="A.groupUnbox(\''+p.id+'\',\''+grp[0].t.id+'\')">묶음 해제</button>';
         grp.forEach(({t,ti})=>{
-        h+='<div class="todo-item'+(t.done?" done":"")+(ui.selectedTodo&&ui.selectedTodo.pid===p.id&&ui.selectedTodo.tid===t.id?" selected-todo":"")+'" data-tpid="'+p.id+'" data-tidx="'+ti+'" onclick="A.todoSelect(event,\''+p.id+'\',\''+t.id+'\')">'          +'<div class="row" style="gap:6px;padding:5px 0">'          +'<span class="todo-drag" title="드래그로 순서 변경" '          +'onmousedown="tDragStart(event,\''+p.id+'\','+ti+')" '          +'ontouchstart="tDragStart(event,\''+p.id+'\','+ti+')">⠿</span>'          +(ti>0?'<button class="icon-btn'+(t.chain?'" style="background:var(--accent-soft);color:var(--accent);border-color:var(--accent)':'')+'" title="'+(t.chain?"묶음 해제":"이전 투두와 묶기 (연이어 처리)")+'" onclick="A.todoChain(\''+p.id+'\',\''+t.id+'\')">⛓</button>':'<span style="width:24px;flex-shrink:0"></span>')          +'<button class="check" style="width:21px;height:21px;'+(t.done?"background:"+(tag?tag.color:"#888")+";border-color:"+(tag?tag.color:"#888"):"")+'" onclick="A.toggleTodo(\''+p.id+'\',\''+t.id+'\')">'+( t.done?"✓":"")+'</button>'          +'<input value="'+esc(t.text)+'" style="padding:6px 9px;font-size:13px;'+(t.done?"text-decoration:line-through;color:var(--sub)":"")+'" onchange="A.todoText(\''+p.id+'\',\''+t.id+'\',this.value)">'          +(!t.done?'<button class="icon-btn'+(t.forceToday?'" style="background:var(--accent);color:#fff;border-color:var(--accent)':'')+'" title="'+(t.forceToday?"오늘 하기 취소":"오늘 하기")+'" onclick="A.todoForceToday(\''+p.id+'\',\''+t.id+'\')">⚡</button>':"")          +'<button class="icon-btn danger" style="width:24px;height:24px;font-size:11px" onclick="A.todoDel(\''+p.id+'\',\''+t.id+'\')">✕</button>'          +'</div></div>';
+        h+='<div class="todo-item'+(t.done?" done":"")+(ui.selectedTodo&&ui.selectedTodo.pid===p.id&&ui.selectedTodo.tid===t.id?" selected-todo":"")+'" data-tpid="'+p.id+'" data-tidx="'+ti+'" onclick="A.todoSelect(event,\''+p.id+'\',\''+t.id+'\')">'          +'<div class="row" style="gap:6px;padding:5px 0">'          +'<span class="todo-drag" title="드래그로 순서 변경" '          +'onmousedown="tDragStart(event,\''+p.id+'\','+ti+')" '          +'ontouchstart="tDragStart(event,\''+p.id+'\','+ti+')">⠿</span>'          +(ui.groupSel&&ui.groupSel.pid===p.id?'<button class="icon-btn'+(ui.groupSel.tids.includes(t.id)?'" style="background:var(--accent);color:#fff;border-color:var(--accent)':'')+' onclick="A.groupToggleSel(\''+p.id+'\',\''+t.id+'\')">'+(ui.groupSel.tids.includes(t.id)?'✓':'○')+'</button>':'<span style="width:24px;flex-shrink:0"></span>')          +'<button class="check" style="width:21px;height:21px;'+(t.done?"background:"+(tag?tag.color:"#888")+";border-color:"+(tag?tag.color:"#888"):"")+'" onclick="A.toggleTodo(\''+p.id+'\',\''+t.id+'\')">'+( t.done?"✓":"")+'</button>'          +'<input value="'+esc(t.text)+'" style="padding:6px 9px;font-size:13px;'+(t.done?"text-decoration:line-through;color:var(--sub)":"")+'" onchange="A.todoText(\''+p.id+'\',\''+t.id+'\',this.value)">'          +(!t.done?'<button class="icon-btn'+(t.forceToday?'" style="background:var(--accent);color:#fff;border-color:var(--accent)':'')+'" title="'+(t.forceToday?"오늘 하기 취소":"오늘 하기")+'" onclick="A.todoForceToday(\''+p.id+'\',\''+t.id+'\')">⚡</button>':"")          +'<button class="icon-btn danger" style="width:24px;height:24px;font-size:11px" onclick="A.todoDel(\''+p.id+'\',\''+t.id+'\')">✕</button>'          +'</div></div>';
         });
         if(isBox)h+='</div>';
       });
       /* 단일 추가 */
+      const _gsActive=ui.groupSel&&ui.groupSel.pid===p.id;
+      if(_gsActive){
+        h+='<div class="row" style="gap:6px;margin-bottom:6px;padding:6px 8px;background:var(--accent-soft);border-radius:8px">'
+          +'<span style="font-size:11px;font-weight:700;color:var(--accent)">투두 클릭으로 선택 → '+ui.groupSel.tids.length+'개</span>'
+          +'<button class="btn" style="padding:4px 10px;font-size:11px" onclick="A.groupConfirm()">박스로 묶기</button>'
+          +'<button class="btn gray" style="padding:4px 10px;font-size:11px" onclick="A.groupClear()">취소</button></div>';}
       const _sh=ui.selectedTodo&&ui.selectedTodo.pid===p.id
         ?'<span style="font-size:10px;color:var(--accent);font-weight:700;flex-shrink:0;white-space:nowrap">▼다음</span>' : '';
       const _sc=ui.selectedTodo&&ui.selectedTodo.pid===p.id
@@ -1832,6 +1839,42 @@ function syncSectionHTML(){
 
 /* ══════════ 동작 핸들러 ══════════ */
 const A={
+  /* ─── 달력 핸들러 ─── */
+  setCalMode(v){data.calMode=v;save();render();},
+  calNav(dir){
+    const now=new Date();
+    let cy=data.calYear||now.getFullYear(),cm=data.calMonth!=null?data.calMonth:now.getMonth();
+    cm+=dir;if(cm<0){cm=11;cy--;}if(cm>11){cm=0;cy++;}
+    data.calYear=cy;data.calMonth=cm;ui.calSelected=null;save();render();},
+  calDayClick(ds){ui.calSelected=(ui.calSelected===ds)?null:ds;render();},
+  eventAdd(ds){
+    const el=document.getElementById('ev-input');
+    const v=el?el.value.trim():'';if(!v)return;
+    const col=document.getElementById('ev-color')?.value||'#2B4EFF';
+    if(!data.events)data.events=[];
+    data.events.push({id:uid(),date:ds,title:v,color:col});
+    if(el)el.value='';save();render();},
+  eventDel(ds,idx){
+    data.events=(data.events||[]).filter((ev,i)=>!(ev.date===ds&&i===idx));
+    save();render();},
+  /* ─── 루틴 핸들러 ─── */
+  routineAdd(){
+    const name=prompt('학습/습관 이름');if(!name||!name.trim())return;
+    const ans=prompt('반복 요일\n0=일 1=월 2=화 3=수 4=목 5=금 6=토\n(쉼표 구분, 비우면 매일)','');
+    const days=ans?ans.split(',').map(x=>parseInt(x.trim())).filter(n=>!isNaN(n)&&n>=0&&n<=6):[];
+    const col=prompt('색상 HEX (비우면 파란)','#2B4EFF')||'#2B4EFF';
+    if(!data.routines)data.routines=[];
+    data.routines.push({id:uid(),name:name.trim(),days,color:col,log:{}});
+    save();render();},
+  routineDel(id){
+    if(!confirm('이 루틴을 삭제할까요?'))return;
+    data.routines=(data.routines||[]).filter(r=>r.id!==id);save();render();},
+  routineCheck(id,ds){
+    const r=(data.routines||[]).find(x=>x.id===id);if(!r)return;
+    if(!r.log)r.log={};
+    r.log[ds]=!r.log[ds];
+    if(!r.log[ds])delete r.log[ds];
+    save();render();},
   tab(k){ui.tab=k;render();},
   editToggle(){ui.edit=!ui.edit;ui.addDDay=false;render();},
   settingsToggle(){ui.settingsOpen=!ui.settingsOpen;render();},
@@ -1990,6 +2033,52 @@ const A={
   pDeadline(id,v){const p=data.projects.find(x=>x.id===id);if(p){p.deadline=v||null;save();render();}},
   todoText(pid,tid,v){data.projects.find(p=>p.id===pid).todos.find(t=>t.id===tid).text=v;save();},
   /* 이전 투두와 묶기 토글 (5번) */
+  /* ─── 파트 그룹 선택 묶기 ─── */
+  groupStart(pid){ui.groupSel={pid,tids:[]};render();},
+  groupToggleSel(pid,tid){
+    if(!ui.groupSel)ui.groupSel={pid,tids:[]};
+    if(ui.groupSel.pid!==pid){ui.groupSel={pid,tids:[tid]};}
+    else{
+      const i=ui.groupSel.tids.indexOf(tid);
+      if(i>=0)ui.groupSel.tids.splice(i,1);
+      else ui.groupSel.tids.push(tid);
+    }
+    render();},
+  groupConfirm(){
+    const sel=ui.groupSel;if(!sel||sel.tids.length<2){alert('2개 이상 선택하세요');return;}
+    const p=data.projects.find(x=>x.id===sel.pid);if(!p)return;
+    // 선택된 투두들을 순서대로 정렬
+    const sorted=[...p.todos].sort((a,b)=>(a.order??0)-(b.order??0));
+    const selSet=new Set(sel.tids);
+    const selTodos=sorted.filter(t=>selSet.has(t.id));
+    if(!selTodos.length)return;
+    // 첫 번째를 그룹 리더로, 나머지는 chain=true
+    selTodos[0].chain=false;
+    for(let i=1;i<selTodos.length;i++)selTodos[i].chain=true;
+    // 선택된 투두들을 리더 위치 기준으로 재배열
+    const leaderIdx=sorted.findIndex(t=>t.id===selTodos[0].id);
+    const others=sorted.filter(t=>!selSet.has(t.id));
+    const before=others.filter(t=>(t.order??0)<(selTodos[0].order??0));
+    const after=others.filter(t=>(t.order??0)>=(selTodos[0].order??0));
+    const newOrder=[...before,...selTodos,...after];
+    newOrder.forEach((t,i)=>t.order=i);
+    ui.groupSel=null;save();render();},
+  groupClear(){ui.groupSel=null;render();},
+  groupUnbox(pid,tid){
+    // 이 투두가 속한 박스를 해제
+    const p=data.projects.find(x=>x.id===pid);if(!p)return;
+    const t=p.todos.find(x=>x.id===tid);if(!t)return;
+    // 다음 chain들 모두 해제
+    const sorted=[...p.todos].sort((a,b)=>(a.order??0)-(b.order??0));
+    const idx=sorted.findIndex(x=>x.id===tid);
+    // 이 그룹의 첫 번째 찾기
+    let start=idx;
+    while(start>0&&sorted[start].chain)start--;
+    // 그룹 끝 찾기
+    let end=start;
+    while(end+1<sorted.length&&sorted[end+1].chain)end++;
+    for(let i=start;i<=end;i++)sorted[i].chain=false;
+    save();render();},
   todoChain(pid,tid){const t=data.projects.find(p=>p.id===pid).todos.find(x=>x.id===tid);
     t.chain=!t.chain;save();render();},
   todoSelect(e,pid,tid){
