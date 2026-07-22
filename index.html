@@ -53,6 +53,12 @@ button{font-family:inherit;cursor:pointer}
 .chip-btn{font-size:12px;font-weight:700;padding:5px 10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--sub);white-space:nowrap}
 .chip-btn.on{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
 .row{display:flex;gap:8px;align-items:center}
+.row>input:not([type=color]):not([type=checkbox]),.row>select{min-width:0}
+.todo-item input:not([type=color]):not([type=checkbox]){flex:1;min-width:0;width:auto}
+.pindent{margin-left:23px}
+.swatch-row{display:inline-flex;gap:5px;flex-wrap:wrap;align-items:center}
+.swatch{width:20px;height:20px;border-radius:6px;border:1px solid var(--line);cursor:pointer;padding:0;flex-shrink:0}
+@media(max-width:680px){.pindent{margin-left:6px}.todo-drag{padding:4px 3px;font-size:14px}}
 .tag-chip{font-size:11px;font-weight:800;color:#fff;border-radius:6px;padding:2px 7px;white-space:nowrap}
 .todo{display:flex;align-items:center;gap:9px;padding:6px 0 6px 9px}
 .check{width:23px;height:23px;border-radius:8px;border:1.5px solid var(--line);background:var(--card);color:#fff;font-size:12px;font-weight:800;line-height:1;flex-shrink:0}
@@ -219,7 +225,7 @@ function makeDefault(){
       {id:uid(),label:"오전",hours:4,tagId:study.id},{id:uid(),label:"오후",hours:4,tagId:study.id},
       {id:uid(),label:"저녁",hours:4,tagId:null},{id:uid(),label:"자유",hours:4,tagId:null}],
     projects:[],pomodoro:{work:25,rest:5},pomoLog:{},ddays:[],
-    boardStickers:[],boardH:200,screenStickers:[],tabs:defaultTabs(),theme:{...DEFAULT_THEME},decor:true,events:[],calMode:"todo",calYear:null,calMonth:null,routines:[]};
+    boardStickers:[],boardH:200,screenStickers:[],tabs:defaultTabs(),theme:{...DEFAULT_THEME},decor:true,events:[],calMode:"todo",calYear:null,calMonth:null,routines:[],recentColors:[]};
 }
 function migrate(d){
   if(!d)return makeDefault();
@@ -257,6 +263,8 @@ function migrate(d){
   /* 항상 실행되는 보정: 일정 id·time 필드 및 오늘의 일정 패널 배치 */
   d.events=d.events||[];
   d.events.forEach(ev=>{if(!ev.id)ev.id=uid();if(!("time"in ev))ev.time=null;});
+  d.recentColors=d.recentColors||[];
+  (d.projects||[]).forEach(p=>(p.todos||[]).forEach(t=>{if(!("todayBlock"in t))t.todayBlock=null;if(!("todaySeq"in t))t.todaySeq=null;}));
   if(d.tabs&&!d.tabs.some(t=>(t.aux||[]).includes("today-events")||(t.main||[]).includes("today-events"))){
     const mt=d.tabs.find(t=>t.id==="main")||d.tabs[0];
     if(mt)(mt.aux=mt.aux||[]).unshift("today-events");
@@ -408,14 +416,16 @@ function buildTodayPlan(sim){
     const q=[];
     for(const p of projs){
       const allocH=sim.todayAlloc[p.id]||0;
-      if(allocH<=0)continue;
       /* 미완료 투두만 (order 순 정렬) */
       /* forceToday 투두는 항상 맨 앞에 (2번) */
       const forcedPool=p.todos.filter(t=>!t.done&&t.forceToday).sort((a,b)=>(a.order??0)-(b.order??0));
       const normalPool=p.todos.filter(t=>!t.done&&!t.forceToday).sort((a,b)=>(a.order??0)-(b.order??0));
       const doneTodayPool=p.todos.filter(t=>t.done&&t.doneAt===tk).sort((a,b)=>(a.order??0)-(b.order??0));
+      /* ⚡(forceToday)·오늘 완료분은 배분이 0이어도 반드시 노출 */
+      if(allocH<=0&&!forcedPool.length&&!doneTodayPool.length)continue;
       const fullPool=[...doneTodayPool,...forcedPool,...normalPool];
-      let cnt=Math.min(Math.ceil(allocH/p.hoursPerTodo-1e-9)+forcedPool.length,fullPool.length);
+      /* 오늘 완료분·⚡는 배분 몫과 별도로 카운트 (완료할수록 목록이 줄어드는 버그 방지) */
+      let cnt=Math.min(Math.ceil(Math.max(0,allocH)/p.hoursPerTodo-1e-9)+forcedPool.length+doneTodayPool.length,fullPool.length);
       /* 파트(묶음) 고려 (5번): 다음 투두가 사슬로 이어져 있으면 함께 포함 */
       while(cnt>0&&cnt<fullPool.length&&fullPool[cnt].chain)cnt++;
       for(let i=0;i<cnt;i++)q.push({todo:fullPool[i],projectId:p.id,projName:p.name,
@@ -457,12 +467,46 @@ function buildTodayPlan(sim){
       groups[gIdx].forEach(it=>byBlock[tagBlocks[tagBlocks.length-1].id].push(it));gIdx++;
     }
   }
+  /* ── 사용자 수동 배치 (6번): todayBlock 오버라이드 → 지정 블록으로 이동, todaySeq → 블록 내 정렬 ── */
+  const _moves=[];
+  for(const bid of Object.keys(byBlock)){
+    byBlock[bid]=byBlock[bid].filter(it=>{
+      const ov=it.todo.todayBlock;
+      if(ov&&ov!==bid&&byBlock[ov]!==undefined){_moves.push({it,to:ov});return false;}
+      return true;
+    });
+  }
+  for(const tid of Object.keys(unplaced)){
+    unplaced[tid]=unplaced[tid].filter(it=>{
+      const ov=it.todo.todayBlock;
+      if(ov&&byBlock[ov]!==undefined){_moves.push({it,to:ov});return false;}
+      return true;
+    });
+    if(!unplaced[tid].length)delete unplaced[tid];
+  }
+  _moves.forEach(m=>byBlock[m.to].push(m.it));
+  Object.keys(byBlock).forEach(bid=>byBlock[bid].sort((a,b)=>((a.todo.todaySeq??1e9)-(b.todo.todaySeq??1e9))));
   return{byBlock,unplaced,queues};
 }
 
 function blockTimes(){let cum=data.dayStart;return data.blocks.map(b=>{const s=cum,e=cum+b.hours;cum=e;return{...b,start:s,end:e};});}
 const tagMap=()=>Object.fromEntries(data.tags.map(t=>[t.id,t]));
 const pomoCountToday=bid=>(data.pomoLog[todayKey()]||{})[bid]||0;
+
+/* ── 최근 사용 색상 (5번) ── */
+function recordColor(c){
+  if(!c)return;c=String(c).toLowerCase();
+  if(!/^#[0-9a-f]{6}$/.test(c))return;
+  data.recentColors=data.recentColors||[];
+  const i=data.recentColors.indexOf(c);if(i>=0)data.recentColors.splice(i,1);
+  data.recentColors.unshift(c);
+  data.recentColors=data.recentColors.slice(0,8);
+}
+function recentColorList(){return[...new Set([...(data.recentColors||[]),...PALETTE.map(c=>c.toLowerCase())])].slice(0,8);}
+/* 색상 입력칸 옆 최근 색 스와치 — 탭 한 번으로 재사용 (4·5번) */
+function swatchRowHTML(targetId){
+  return'<span class="swatch-row">'+recentColorList().map(c=>'<button class="swatch" style="background:'+c+'" title="'+c+'" onclick="document.getElementById(\''+targetId+'\').value=\''+c+'\'"></button>').join('')+'</span>';
+}
 
 /* ── 최소 일당 시간 계산 (6번) ── */
 function projAvgPomoMin(p){
@@ -620,7 +664,8 @@ function tDragEnd(e){
   const toIdx=parseInt(item.dataset.tidx);
   if(isNaN(toIdx)||toIdx===tDrag.fromIdx)return;
   const p=data.projects.find(x=>x.id===tDrag.pid);if(!p)return;
-  const todos=[...p.todos].sort((a,b)=>(a.order??0)-(b.order??0));
+  /* 화면에 보이는 정렬(완료 뒤로 + order순)과 동일한 기준으로 재배열해야 인덱스가 어긋나지 않음 (7번) */
+  const todos=[...p.todos].sort((a,b)=>{const da=a.done?1:0,db=b.done?1:0;return da-db||(a.order??0)-(b.order??0);});
   const [moved]=todos.splice(tDrag.fromIdx,1);todos.splice(toIdx,0,moved);
   todos.forEach((t,i)=>t.order=i);save();render();
 }
@@ -719,7 +764,7 @@ function stickerStylePopupHTML(scope,id){
       +'style="width:26px;height:26px;border-radius:8px;cursor:pointer;background:'+c+';'
       +'border:2.5px solid '+(on?"var(--accent)":c==="#FFFFFF"?"var(--line)":"transparent")+'"></button>';
   }
-  h+='<input type="color" value="'+(s.color||"#182035")+'" oninput="A.stickerColor(\''+scope+'\',\''+id+'\',this.value)" title="직접 선택">';
+  h+='<input list="recent-colors" type="color" value="'+(s.color||"#182035")+'" oninput="A.stickerColor(\''+scope+'\',\''+id+'\',this.value)" title="직접 선택">';
   h+='</div></div></div>';
   return h;
 }
@@ -1030,7 +1075,7 @@ function cDDay(compact){
   }h+='</div>';}
   if(ui.addDDay)h+='<div style="display:flex;flex-direction:column;gap:7px;margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">'
     +'<input id="dd-name" placeholder="이름 (예: 수능)"><div class="row"><input id="dd-date" type="date" style="flex:1">'
-    +'<input type="color" id="dd-color" value="'+PALETTE[data.ddays.length%PALETTE.length]+'"></div>'
+    +'<input list="recent-colors" type="color" id="dd-color" value="'+PALETTE[data.ddays.length%PALETTE.length]+'">'+swatchRowHTML('dd-color')+'</div>'
     +'<div class="row"><button class="btn" onclick="A.ddayAdd()">추가</button><button class="btn gray" onclick="A.ddayHideAdd()">취소</button></div></div>';
   return h;
 }
@@ -1056,11 +1101,22 @@ function cRoutine(compact){
 
   let h='<div class="card-head"><h2 class="card-title">🔄 루틴</h2>'
     +'<div class="row" style="gap:4px">'
-    +'<button class="chip-btn" onclick="A.routineAdd()">＋ 추가</button>'
+    +'<button class="chip-btn'+(ui.addRoutine?' on':'')+'" onclick="A.routineFormToggle()">'+(ui.addRoutine?'✕ 닫기':'＋ 추가')+'</button>'
     +'</div></div>';
 
+  /* 인라인 추가 폼 — 모바일에서도 PC와 동일한 방식 (4번) */
+  if(ui.addRoutine){
+    h+='<div style="background:var(--accent-soft);border-radius:10px;padding:9px;margin-bottom:9px;display:flex;flex-direction:column;gap:7px">'
+      +'<input id="rt-name" placeholder="습관 이름 (엔터로 추가)" onkeydown="if(event.key===\'Enter\')A.routineAdd()">'
+      +'<div class="row" style="gap:4px;flex-wrap:wrap"><span style="font-size:10px;font-weight:700;color:var(--sub);flex-shrink:0">요일</span>'
+      +DS.map((d,i)=>'<button class="chip-btn'+((ui.routineDays||[]).includes(i)?' on':'')+'" style="padding:4px 9px;font-size:11px" onclick="A.routineDayToggle('+i+')">'+d+'</button>').join('')
+      +'</div><p class="hint" style="margin:0;font-size:10px">요일을 안 고르면 매일 반복돼요.</p>'
+      +'<div class="row" style="gap:6px;flex-wrap:wrap"><input list="recent-colors" type="color" id="rt-color" value="#2B4EFF" style="flex-shrink:0">'+swatchRowHTML('rt-color')+'</div>'
+      +'<button class="btn" onclick="A.routineAdd()">추가</button></div>';
+  }
+
   if(!data.routines||!data.routines.length){
-    h+='<p class="empty" style="font-size:12px">주기적으로 반복할 습관을 추가해보세요.</p>';
+    if(!ui.addRoutine)h+='<p class="empty" style="font-size:12px">주기적으로 반복할 습관을 추가해보세요.</p>';
     return h;
   }
 
@@ -1079,7 +1135,7 @@ function cRoutine(compact){
     const isEvery=!r.days||r.days.length===0;
     h+='<div style="display:grid;grid-template-columns:1fr repeat(7,28px);gap:3px;align-items:center;margin-bottom:5px">'
       +'<div class="row" style="gap:4px;min-width:0">'
-      +'<input type="color" value="'+(r.color||'#2B4EFF')+'" title="색상 변경" onchange="A.routineColor(\''+r.id+'\',this.value)" style="width:16px;height:16px;padding:0;border:none;border-radius:4px;background:none;cursor:pointer;flex-shrink:0">'
+      +'<input list="recent-colors" type="color" value="'+(r.color||'#2B4EFF')+'" title="색상 변경" onchange="A.routineColor(\''+r.id+'\',this.value)" style="width:16px;height:16px;padding:0;border:none;border-radius:4px;background:none;cursor:pointer;flex-shrink:0">'
       +'<span style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">'+esc(r.name)+'</span>'
       +(compact?'':'<button class="icon-btn danger" style="width:18px;height:18px;font-size:9px;flex-shrink:0" onclick="A.routineDel(\''+r.id+'\')">&#10005;</button>')
       +'</div>';
@@ -1157,13 +1213,14 @@ function cCalendar(compact,ctx){
       if(!(dlMap[ds]&&dlMap[ds].length)&&!(doneMap[ds]&&doneMap[ds].length))h+='<p style="font-size:12px;color:var(--sub)">이 날에는 기록이 없어요.</p>';
     }else{
       if(evMap[ds]&&evMap[ds].length)h+=evMap[ds].map(ev=>'<div class="row" style="gap:5px;padding:3px 0">'
-        +'<input type="color" value="'+(ev.color||'#2B4EFF')+'" title="색상 변경" onchange="A.eventColor(\''+ev.id+'\',this.value)" style="width:22px;height:22px;padding:0;border:none;border-radius:5px;background:none;cursor:pointer;flex-shrink:0">'
+        +'<input list="recent-colors" type="color" value="'+(ev.color||'#2B4EFF')+'" title="색상 변경" onchange="A.eventColor(\''+ev.id+'\',this.value)" style="width:22px;height:22px;padding:0;border:none;border-radius:5px;background:none;cursor:pointer;flex-shrink:0">'
         +'<input type="time" value="'+(ev.time||'')+'" title="시간 (비우면 종일)" onchange="A.eventTime(\''+ev.id+'\',this.value)" style="width:76px;padding:4px 5px;font-size:11px;flex-shrink:0">'
         +'<input value="'+esc(ev.title)+'" title="내용 편집" onchange="A.eventTitle(\''+ev.id+'\',this.value)" style="flex:1;min-width:0;padding:5px 8px;font-size:13px;font-weight:700;color:'+(ev.color||'var(--ink)')+'">'
         +'<button class="icon-btn danger" style="width:22px;height:22px;font-size:10px;flex-shrink:0" onclick="A.eventDel(\''+ev.id+'\')">&#10005;</button></div>').join("");
       if(!(evMap[ds]&&evMap[ds].length))h+='<p style="font-size:12px;color:var(--sub)">등록된 일정이 없어요.</p>';
-      h+='<div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap"><input id="ev-input" placeholder="일정 내용 (엔터로 추가)" onkeydown="if(event.key===\'Enter\')A.eventAdd(\''+ds+'\')" style="flex:1;min-width:110px;padding:8px;font-size:13px"><input type="time" id="ev-time" title="시간 (선택)" style="width:86px;padding:6px 5px;font-size:12px;flex-shrink:0"><input type="color" id="ev-color" value="#2B4EFF" style="width:36px;height:36px;border-radius:8px;cursor:pointer;border:1px solid var(--line);flex-shrink:0"><button class="btn" onclick="A.eventAdd(\''+ds+'\')" style="width:48px;flex-shrink:0">추가</button></div>'
-        +'<p class="hint" style="margin:4px 0 0;font-size:10px">시간을 비워두면 종일 일정이 되고, 추가 후에도 색·시간·내용을 바로 고칠 수 있어요.</p>';
+      h+='<div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap"><input id="ev-input" placeholder="일정 내용 (엔터로 추가)" onkeydown="if(event.key===\'Enter\')A.eventAdd(\''+ds+'\')" style="flex:1;min-width:110px;padding:8px;font-size:13px"><input type="time" id="ev-time" title="시간 (선택)" style="width:86px;padding:6px 5px;font-size:12px;flex-shrink:0"><input list="recent-colors" type="color" id="ev-color" value="#2B4EFF" style="width:36px;height:36px;border-radius:8px;cursor:pointer;border:1px solid var(--line);flex-shrink:0"><button class="btn" onclick="A.eventAdd(\''+ds+'\')" style="width:48px;flex-shrink:0">추가</button></div>'
+        +'<p class="hint" style="margin:4px 0 0;font-size:10px">시간을 비워두면 종일 일정이 되고, 추가 후에도 색·시간·내용을 바로 고칠 수 있어요.</p>'
+        +'<div class="row" style="gap:5px;margin-top:5px;flex-wrap:wrap"><span style="font-size:10px;color:var(--sub);font-weight:700;flex-shrink:0">최근 색</span>'+swatchRowHTML('ev-color')+'</div>';
     }
     h+='</div>';
   }
@@ -1329,21 +1386,21 @@ function cTodayTodos(compact,ctx){
   }
   if(data.todoSort==="block"){
     for(const b of timed){
-      const items=plan.byBlock[b.id]||[];if(!b.tagId||!items.length)continue;
+      const items=plan.byBlock[b.id]||[];if(!items.length)continue;
       const tag=tm[b.tagId];
       const show=compact?items.slice(0,3):items;
       h+='<div style="margin-bottom:12px"><div class="block-head">'
         +'<span class="block-bar" style="background:'+(tag?tag.color:"var(--line)")+'"></span>'
         +'<span style="font-weight:800;font-size:13px">'+esc(b.label)+'</span>'
-        +'<span class="tag-chip" style="background:'+(tag?tag.color:"#999")+'">'+esc(tag?tag.name:"")+'</span>'
+        +(tag?'<span class="tag-chip" style="background:'+tag.color+'">'+esc(tag.name)+'</span>':"")
         +(!compact?'<span style="font-size:11px;color:var(--sub)">'+fmtClock(b.start)+"–"+fmtClock(b.end)+'</span>'
           +'<span id="pomocount-'+b.id+'" style="font-size:11px;color:var(--sub)">'+(pomoCountToday(b.id)>0?"🍅 "+pomoCountToday(b.id):"")+'</span>'
           +'<button class="chip-btn" style="margin-left:auto" onclick="A.pomoBlock(\''+b.id+'\')">▶</button>':"")
-        +'</div>'+show.map(it=>todoRowHTML(it,tag?tag.color:"var(--sub)",compact)).join("")
+        +'</div>'+show.map((it,si)=>todoRowHTML(it,tag?tag.color:"var(--sub)",compact,false,null,compact?null:{bid:b.id,idx:si,len:items.length})).join("")
         +(compact&&items.length>3?'<p class="hint" style="margin:2px 0 0 9px">외 '+(items.length-3)+'개…</p>':"")+'</div>';
     }
     for(const tagId of Object.keys(plan.unplaced)){const tag=tm[tagId];
-      h+='<div style="margin-bottom:12px"><div class="block-head"><span class="block-bar" style="background:'+tag.color+'"></span><span style="font-weight:800;font-size:13px">'+esc(tag.name)+'</span><span style="font-size:11px;color:var(--danger)">연결된 블록 없음</span></div>'+plan.unplaced[tagId].map(it=>todoRowHTML(it,tag.color,compact)).join("")+'</div>';}
+      h+='<div style="margin-bottom:12px"><div class="block-head"><span class="block-bar" style="background:'+tag.color+'"></span><span style="font-weight:800;font-size:13px">'+esc(tag.name)+'</span><span style="font-size:11px;color:var(--danger)">연결된 블록 없음</span></div>'+plan.unplaced[tagId].map(it=>todoRowHTML(it,tag.color,compact,false,null,compact?null:{bid:null,idx:-1,len:0})).join("")+'</div>';}
   }else{
     let items=[...allItems];
     if(data.todoSort==="urgent")items.sort((a,b)=>{const da=a.deadline?calcDDayNum(a.deadline):9e9,db=b.deadline?calcDDayNum(b.deadline):9e9;return da-db||a.priority-b.priority;});
@@ -1379,14 +1436,26 @@ function behindListHTML(behind,compact){
   }
   return h;
 }
-function todoRowHTML(it,color,compact,withMeta,tag){
+function todoRowHTML(it,color,compact,withMeta,tag,blockCtl){
   let meta=esc(it.projName)+" · "+fmtDur(it.hours);
   if(it.todo.pomos)meta+=' · 🍅'+it.todo.pomos;
   if(withMeta&&it.deadline){const n=calcDDayNum(it.deadline);meta+=' · <span class="deadline-chip" style="background:'+(n<=3?"var(--danger)":"var(--line)")+';color:'+(n<=3?"#fff":"var(--sub)")+'">'+calcDDay(it.deadline)+'</span>';}
+  /* 블록 수동 배치 컨트롤 (6번): 블록 선택 + 블록 내 순서 이동 */
+  let ctl='';
+  if(blockCtl&&!it.todo.done){
+    ctl='<select title="블록 지정" onchange="A.todayBlockSet(\''+it.projectId+'\',\''+it.todo.id+'\',this.value)" style="width:62px;font-size:10px;padding:4px 2px;flex-shrink:0;border-radius:7px">'
+      +'<option value="">자동</option>'
+      +data.blocks.map(b=>'<option value="'+b.id+'"'+((it.todo.todayBlock||'')===b.id?' selected':'')+'>'+esc(b.label)+'</option>').join('')
+      +'</select>';
+    if(blockCtl.bid&&blockCtl.len>1)
+      ctl+='<button class="icon-btn" style="width:20px;height:20px;font-size:10px" title="위로" onclick="A.todayMove(\''+blockCtl.bid+'\','+blockCtl.idx+',-1)">↑</button>'
+        +'<button class="icon-btn" style="width:20px;height:20px;font-size:10px" title="아래로" onclick="A.todayMove(\''+blockCtl.bid+'\','+blockCtl.idx+',1)">↓</button>';
+  }
   return'<div class="todo'+(it.todo.done?" done":"")+'">'
     +'<button class="check" style="'+(it.todo.done?"background:"+color+";border-color:"+color:"")+'" onclick="A.toggleTodo(\''+it.projectId+'\',\''+it.todo.id+'\')">'+( it.todo.done?"✓":"")+'</button>'
     +'<div style="min-width:0;flex:1"><div class="todo-text">'+(withMeta&&tag?'<span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:'+tag.color+';margin-right:5px"></span>':"")
     +esc(it.todo.text)+'</div><div class="todo-sub">'+meta+'</div></div>'
+    +ctl
     +(!compact&&!it.todo.done?'<button class="icon-btn" style="width:24px;height:24px;font-size:10px" title="이 투두로 뽀모도로" onclick="A.pomoTodo(\''+it.projectId+'\',\''+it.todo.id+'\')">▶</button>':"")
     +'</div>';
 }
@@ -1412,7 +1481,7 @@ function cTagsSettings(compact){
   if(compact)return h+'<p class="empty">태그 '+data.tags.length+'개<br>편집은 메인 패널로 확장하세요.</p>';
   data.tags.forEach((tag,ti)=>{
     h+='<div style="padding:10px 0;'+(ti>0?"border-top:1px solid var(--line)":"")+'">'
-      +'<div class="row" style="margin-bottom:8px"><input type="color" value="'+esc(tag.color)+'" oninput="A.tagColor('+ti+',this.value)" style="flex-shrink:0">'
+      +'<div class="row" style="margin-bottom:8px"><input list="recent-colors" type="color" value="'+esc(tag.color)+'" oninput="A.tagColor('+ti+',this.value)" style="flex-shrink:0">'
       +'<input value="'+esc(tag.name)+'" style="font-weight:700;padding:8px 10px" onchange="A.tagName('+ti+',this.value)">'
       +'<button class="icon-btn danger" onclick="A.tagDel('+ti+')">✕</button></div>'
       +'<div class="week-grid">'+WEEK_ORDER.map(dw=>'<div><div class="d" style="color:'+(dw===0?"var(--danger)":dw===6?"var(--accent)":"var(--sub)")+'">'+DAY_NAMES[dw]+'</div><input type="number" min="0" max="24" step="0.5" value="'+(tag.weekHours[dw]??0)+'" style="font-size:12px" onchange="A.tagHours('+ti+","+dw+',this.value)"></div>').join("")+'</div></div>';
@@ -1479,7 +1548,7 @@ function projListHTML(sim,tm){
       +'<button class="icon-btn" onclick="A.pMove(\''+p.id+'\',1)">↓</button>'
       +'<button class="icon-btn danger" onclick="A.pDel(\''+p.id+'\')">✕</button></div>';
     /* 진행 바 + 메타 */
-    h+='<div style="margin-top:7px;margin-left:23px"><div class="progress"><div style="width:'+pct+'%;background:'+(tag?tag.color:"var(--accent)")+'"></div></div>'
+    h+='<div class="pindent" style="margin-top:7px"><div class="progress"><div style="width:'+pct+'%;background:'+(tag?tag.color:"var(--accent)")+'"></div></div>'
       +'<div style="font-size:12px;color:var(--sub);margin-top:4px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">'
       +'<span>'+doneCnt+'/'+p.todos.length+' · 투두당 '+fmtDur(p.hoursPerTodo)+'</span>'
       +(sim.finish[p.id]&&!fin?'<span>'+fmtDate(sim.finish[p.id])+' 종료 예정</span>':"")
@@ -1491,21 +1560,24 @@ function projListHTML(sim,tm){
       +'</div></div>';
     /* 프로젝트 설정 편집 패널 (3번) */
     if(editing){
-      h+='<div style="margin-left:23px;margin-top:8px;background:#EDF0FF;border:1px solid var(--accent);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:7px">'
+      h+='<div class="pindent" style="margin-top:8px;min-width:0;background:#EDF0FF;border:1px solid var(--accent);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:7px">'
         +'<div style="font-size:11px;font-weight:800;color:var(--accent);margin-bottom:2px">프로젝트 설정 편집</div>'
         +'<input value="'+esc(p.name)+'" placeholder="프로젝트 이름" onchange="A.pSetName(\''+p.id+'\',this.value)">'
-        +'<div class="row"><select onchange="A.pSetTag(\''+p.id+'\',this.value)" style="flex:1">'+data.tags.map(t=>'<option value="'+t.id+'"'+(p.tagId===t.id?" selected":"")+'>'+esc(t.name)+'</option>').join("")+'</select>'
+        +'<div class="row" style="flex-wrap:wrap"><select style="flex:1;min-width:0" onchange="A.pSetTag(\''+p.id+'\',this.value)">'+data.tags.map(t=>'<option value="'+t.id+'"'+(p.tagId===t.id?" selected":"")+'>'+esc(t.name)+'</option>').join("")+'</select>'
         +'<div style="display:flex;flex-direction:column;gap:2px;flex-shrink:0"><span style="font-size:10px;color:var(--sub);font-weight:700">투두당(분)</span>'
         +'<input type="number" min="1" step="1" value="'+hpt2min(p.hoursPerTodo)+'" style="width:80px" onchange="A.pSetHpt(\''+p.id+'\',this.value)"></div></div>'
         +'<div class="row"><span style="font-size:11px;color:var(--sub);font-weight:700;flex-shrink:0;width:60px">마감</span><input type="date" value="'+(p.deadline||"")+'" style="flex:1" onchange="A.pDeadline(\''+p.id+'\',this.value)">'+(p.deadline?'<button class="icon-btn" onclick="A.pDeadline(\''+p.id+'\',null)">✕</button>':"")+'</div>'
         +'<div class="row"><span style="font-size:11px;color:var(--sub);font-weight:700;flex-shrink:0;width:60px">일 최대(h)</span><input type="number" min="0.5" step="0.5" value="'+(p.dailyCap||"")+'" placeholder="제한 없음" style="flex:1;text-align:left;padding:9px 11px" onchange="A.pSetCap(\''+p.id+'\',this.value)"></div>'
-        +(projAvgPomoMin(p)?'<div class="row" style="gap:6px;margin-bottom:6px;flex-wrap:wrap"><span style="font-size:12px;color:var(--sub)">실측 평균 <b>'+projAvgPomoMin(p)+'분</b> (기록 '+p.todos.filter(t=>t.done&&t.pomos>0).length+'개)</span><button class="chip-btn" onclick="A.pApplyAvg(\''+p.id+'\')" title="적용">적용</button><label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer"><input type="checkbox" '+(p.autoHpt?'checked':'')+' onchange="A.pAutoHpt(\''+p.id+'\',this.checked)">자동 조정</label></div>':'')
+        +'<div class="row" style="gap:6px;margin-bottom:6px;flex-wrap:wrap">'
+        +(projAvgPomoMin(p)?'<span style="font-size:12px;color:var(--sub)">실측 평균 <b>'+projAvgPomoMin(p)+'분</b> (기록 '+p.todos.filter(t=>t.done&&t.pomos>0).length+'개)</span><button class="chip-btn" onclick="A.pApplyAvg(\''+p.id+'\')" title="적용">적용</button>'
+          :'<span style="font-size:11px;color:var(--sub)">실측 기록 없음 · 뽀모도로로 투두를 완료하면 평균이 쌓여요</span>')
+        +'<label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex-shrink:0"><input type="checkbox" '+(p.autoHpt?'checked':'')+' onchange="A.pAutoHpt(\''+p.id+'\',this.checked)">최소단위 자동 조정</label></div>'
         +'<button class="btn gray" onclick="A.pEditToggle(\''+p.id+'\')">닫기</button></div>';
     }
     /* 투두 목록 (4번 드래그, 10번 자동 생성) */
     if(open){
       const sortedTodos=[...p.todos].sort((a,b)=>{const da=a.done?1:0,db=b.done?1:0;return da-db||(a.order??0)-(b.order??0);});
-      h+='<div style="margin-left:23px;margin-top:8px;background:#FAFBFD;border:1px solid var(--line);border-radius:12px;padding:9px">';
+      h+='<div class="pindent" style="margin-top:8px;min-width:0;background:#FAFBFD;border:1px solid var(--line);border-radius:12px;padding:9px">';
       /* 파트 박스 그룹 렌더링 (4번) */
       const _partGroups=[];
       sortedTodos.forEach((t,ti)=>{
@@ -1516,7 +1588,7 @@ function projListHTML(sim,tm){
         const isBox=grp.length>1||(grp.length===1&&grp[0].t.chain);
         if(isBox)h+='<div class="todo-part-group"><button class="chip-btn" style="font-size:10px;padding:2px 7px;margin-bottom:4px;display:block" onclick="A.groupUnbox(\''+p.id+'\',\''+grp[0].t.id+'\')">묶음 해제</button>';
         grp.forEach(({t,ti})=>{
-        h+='<div class="todo-item'+(t.done?" done":"")+(ui.selectedTodo&&ui.selectedTodo.pid===p.id&&ui.selectedTodo.tid===t.id?" selected-todo":"")+'" data-tpid="'+p.id+'" data-tidx="'+ti+'" onclick="A.todoSelect(event,\''+p.id+'\',\''+t.id+'\')">'          +'<div class="row" style="gap:6px;padding:5px 0">'          +'<span class="todo-drag" title="드래그로 순서 변경" '          +'onmousedown="tDragStart(event,\''+p.id+'\','+ti+')" '          +'ontouchstart="tDragStart(event,\''+p.id+'\','+ti+')">⠿</span>'          +(ui.groupSel&&ui.groupSel.pid===p.id?'<button class="icon-btn'+(ui.groupSel.tids.includes(t.id)?'" style="background:var(--accent);color:#fff;border-color:var(--accent)':'')+' onclick="A.groupToggleSel(\''+p.id+'\',\''+t.id+'\')">'+(ui.groupSel.tids.includes(t.id)?'✓':'○')+'</button>':'<span style="width:24px;flex-shrink:0"></span>')          +'<button class="check" style="width:21px;height:21px;'+(t.done?"background:"+(tag?tag.color:"#888")+";border-color:"+(tag?tag.color:"#888"):"")+'" onclick="A.toggleTodo(\''+p.id+'\',\''+t.id+'\')">'+( t.done?"✓":"")+'</button>'          +'<input value="'+esc(t.text)+'" style="padding:6px 9px;font-size:13px;'+(t.done?"text-decoration:line-through;color:var(--sub)":"")+'" onchange="A.todoText(\''+p.id+'\',\''+t.id+'\',this.value)">'          +(!t.done?'<button class="icon-btn'+(t.forceToday?'" style="background:var(--accent);color:#fff;border-color:var(--accent)':'')+'" title="'+(t.forceToday?"오늘 하기 취소":"오늘 하기")+'" onclick="A.todoForceToday(\''+p.id+'\',\''+t.id+'\')">⚡</button>':"")          +'<button class="icon-btn danger" style="width:24px;height:24px;font-size:11px" onclick="A.todoDel(\''+p.id+'\',\''+t.id+'\')">✕</button>'          +'</div></div>';
+        h+='<div class="todo-item'+(t.done?" done":"")+(ui.selectedTodo&&ui.selectedTodo.pid===p.id&&ui.selectedTodo.tid===t.id?" selected-todo":"")+'" data-tpid="'+p.id+'" data-tidx="'+ti+'" onclick="A.todoSelect(event,\''+p.id+'\',\''+t.id+'\')">'          +'<div class="row" style="gap:6px;padding:5px 0">'          +'<span class="todo-drag" title="드래그로 순서 변경" '          +'onmousedown="tDragStart(event,\''+p.id+'\','+ti+')" '          +'ontouchstart="tDragStart(event,\''+p.id+'\','+ti+')">⠿</span>'          +(ui.groupSel&&ui.groupSel.pid===p.id?'<button class="icon-btn'+(ui.groupSel.tids.includes(t.id)?'" style="background:var(--accent);color:#fff;border-color:var(--accent)':'')+' onclick="A.groupToggleSel(\''+p.id+'\',\''+t.id+'\')">'+(ui.groupSel.tids.includes(t.id)?'✓':'○')+'</button>':'')          +'<button class="check" style="width:21px;height:21px;'+(t.done?"background:"+(tag?tag.color:"#888")+";border-color:"+(tag?tag.color:"#888"):"")+'" onclick="A.toggleTodo(\''+p.id+'\',\''+t.id+'\')">'+( t.done?"✓":"")+'</button>'          +'<input value="'+esc(t.text)+'" style="padding:6px 9px;font-size:13px;'+(t.done?"text-decoration:line-through;color:var(--sub)":"")+'" onchange="A.todoText(\''+p.id+'\',\''+t.id+'\',this.value)">'          +(!t.done?'<button class="icon-btn'+(t.forceToday?'" style="background:var(--accent);color:#fff;border-color:var(--accent)':'')+'" title="'+(t.forceToday?"오늘 하기 취소":"오늘 하기")+'" onclick="A.todoForceToday(\''+p.id+'\',\''+t.id+'\')">⚡</button>':"")          +'<button class="icon-btn danger" style="width:24px;height:24px;font-size:11px" onclick="A.todoDel(\''+p.id+'\',\''+t.id+'\')">✕</button>'          +'</div></div>';
         });
         if(isBox)h+='</div>';
       });
@@ -1604,6 +1676,9 @@ function render(){
     else{aux.classList.remove("mobile-show");main.classList.remove("mobile-hide");}
   }else{aux.classList.remove("mobile-show");main.classList.remove("mobile-hide");}
   aux.classList.remove("droptarget");main.classList.remove("droptarget");
+  let _dl=document.getElementById("recent-colors");
+  if(!_dl){_dl=document.createElement("datalist");_dl.id="recent-colors";document.body.appendChild(_dl);}
+  _dl.innerHTML=recentColorList().map(c=>'<option value="'+c+'"></option>').join("");
   renderScreenLayer();pomoPaint();paintSync();
   /* 스타일 팝업 (3번) / 블록 투두 팝업 (4번) */
   let popupEl=document.getElementById("popup-slot");
@@ -1630,7 +1705,7 @@ function settingsHTML(){
   const modeText=store.mode==="claude"?"Claude 계정에 저장 — 모바일·PC 동기화됩니다.":store.mode==="local"?"이 브라우저에 저장 중 — 기기 이동은 백업을 사용하세요.":"임시 저장 중 — 닫으면 사라지니 백업하세요.";
   return'<div id="settings-pop"><div class="card-head"><h2 class="card-title">테마 · 데이터</h2><button class="chip-btn" onclick="A.settingsToggle()">닫기</button></div>'
     +'<div class="row" style="flex-wrap:wrap;gap:14px;margin-bottom:12px">'
-    +[["accent","포인트"],["bg","배경"],["card","카드"],["ink","글자"]].map(([k,l])=>'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--sub)"><input type="color" value="'+esc(data.theme[k])+'" oninput="A.themeSet(\''+k+'\',this.value)">'+l+'</label>').join("")
+    +[["accent","포인트"],["bg","배경"],["card","카드"],["ink","글자"]].map(([k,l])=>'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--sub)"><input list="recent-colors" type="color" value="'+esc(data.theme[k])+'" oninput="A.themeSet(\''+k+'\',this.value)">'+l+'</label>').join("")
     +'<button class="chip-btn" onclick="A.themeReset()">기본 테마</button></div>'
     +'<div class="row" style="margin-bottom:12px"><label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer">'
     +'<input type="checkbox" '+(data.autoReport?"checked":"")+' onchange="A.setAutoReport(this.checked)" style="width:18px;height:18px">'
@@ -1893,14 +1968,14 @@ const A={
     const col=document.getElementById('ev-color')?.value||'#2B4EFF';
     const time=document.getElementById('ev-time')?.value||null;
     if(!data.events)data.events=[];
-    data.events.push({id:uid(),date:ds,title:v,color:col,time});
+    data.events.push({id:uid(),date:ds,title:v,color:col,time});recordColor(col);
     if(el)el.value='';save();render();},
   eventDel(id){
     data.events=(data.events||[]).filter(ev=>ev.id!==id);
     save();render();},
   eventColor(id,v){
     const ev=(data.events||[]).find(x=>x.id===id);if(!ev)return;
-    ev.color=v;save();render();},
+    ev.color=v;recordColor(v);save();render();},
   eventTitle(id,v){
     const ev=(data.events||[]).find(x=>x.id===id);if(!ev)return;
     if(v&&v.trim())ev.title=v.trim();
@@ -1916,20 +1991,26 @@ const A={
     if(t)ui.tab=t.id;
     save();render();},
   /* ─── 루틴 핸들러 ─── */
+  routineFormToggle(){ui.addRoutine=!ui.addRoutine;ui.routineDays=[];render();},
+  routineDayToggle(d){
+    ui.routineDays=ui.routineDays||[];
+    const i=ui.routineDays.indexOf(d);
+    if(i>=0)ui.routineDays.splice(i,1);else ui.routineDays.push(d);
+    render();},
   routineAdd(){
-    const name=prompt('학습/습관 이름');if(!name||!name.trim())return;
-    const ans=prompt('반복 요일\n0=일 1=월 2=화 3=수 4=목 5=금 6=토\n(쉼표 구분, 비우면 매일)','');
-    const days=ans?ans.split(',').map(x=>parseInt(x.trim())).filter(n=>!isNaN(n)&&n>=0&&n<=6):[];
-    const col=prompt('색상 HEX (비우면 파란)','#2B4EFF')||'#2B4EFF';
+    const name=document.getElementById('rt-name')?.value.trim();if(!name)return;
+    const col=document.getElementById('rt-color')?.value||'#2B4EFF';
+    const days=[...(ui.routineDays||[])].sort((a,b)=>a-b);
     if(!data.routines)data.routines=[];
-    data.routines.push({id:uid(),name:name.trim(),days,color:col,log:{}});
+    data.routines.push({id:uid(),name,days,color:col,log:{}});
+    recordColor(col);ui.addRoutine=false;ui.routineDays=[];
     save();render();},
   routineDel(id){
     if(!confirm('이 루틴을 삭제할까요?'))return;
     data.routines=(data.routines||[]).filter(r=>r.id!==id);save();render();},
   routineColor(id,v){
     const r=(data.routines||[]).find(x=>x.id===id);if(!r)return;
-    r.color=v;save();render();},
+    r.color=v;recordColor(v);save();render();},
   routineCheck(id,ds){
     const r=(data.routines||[]).find(x=>x.id===id);if(!r)return;
     if(!r.log)r.log={};
@@ -1995,7 +2076,7 @@ const A={
   pomoSetRest(v){data.pomodoro.rest=Math.max(1,Math.min(60,parseInt(v)||5));if(!pomo.running)pomo.leftMs=pomoDur(pomo.phase);save();pomoPaint();},
   /* D-Day */
   ddayShowAdd(){ui.addDDay=true;render();},ddayHideAdd(){ui.addDDay=false;render();},
-  ddayAdd(){const name=document.getElementById("dd-name")?.value.trim(),date=document.getElementById("dd-date")?.value,color=document.getElementById("dd-color")?.value||PALETTE[0];if(!name||!date)return;data.ddays.push({id:uid(),name,date,color});ui.addDDay=false;save();render();},
+  ddayAdd(){const name=document.getElementById("dd-name")?.value.trim(),date=document.getElementById("dd-date")?.value,color=document.getElementById("dd-color")?.value||PALETTE[0];if(!name||!date)return;data.ddays.push({id:uid(),name,date,color});recordColor(color);ui.addDDay=false;save();render();},
   ddayDel(id){data.ddays=data.ddays.filter(d=>d.id!==id);save();render();},
   /* 보드 */
   boardPrompt(type){
@@ -2153,6 +2234,18 @@ const A={
   todoForceToday(pid,tid){
     const t=data.projects.find(p=>p.id===pid)?.todos.find(x=>x.id===tid);
     if(!t)return;t.forceToday=!t.forceToday;save();render();},
+  /* ─── 오늘의 투두 수동 배치 (6번) ─── */
+  todayBlockSet(pid,tid,v){
+    const t=data.projects.find(p=>p.id===pid)?.todos.find(x=>x.id===tid);
+    if(!t)return;t.todayBlock=v||null;t.todaySeq=null;save();render();},
+  todayMove(bid,idx,dir){
+    const sim=simulateAll(),plan=buildTodayPlan(sim);
+    const list=plan.byBlock[bid]||[];
+    const j=idx+dir;if(idx<0||idx>=list.length||j<0||j>=list.length)return;
+    /* 현재 화면 순서를 todaySeq로 고정한 뒤 두 항목을 교환 */
+    list.forEach((it,i)=>it.todo.todaySeq=i);
+    list[idx].todo.todaySeq=j;list[j].todo.todaySeq=idx;
+    save();render();},
   todoDel(pid,tid){const p=data.projects.find(x=>x.id===pid);p.todos=p.todos.filter(t=>t.id!==tid);p.todos.forEach((t,i)=>t.order=i);save();render();},
   todoAdd(pid){const el=document.getElementById("new-todo");const v=el?.value.trim();if(!v)return;
     const p=data.projects.find(x=>x.id===pid);
@@ -2181,7 +2274,7 @@ const A={
     }
     save();render();},
   /* 태그/블록 */
-  tagColor(i,v){data.tags[i].color=v;save();render();},
+  tagColor(i,v){data.tags[i].color=v;recordColor(v);save();render();},
   tagName(i,v){data.tags[i].name=v;save();},
   tagDel(i){const id=data.tags[i].id;data.tags.splice(i,1);data.projects=data.projects.filter(p=>p.tagId!==id);data.blocks.forEach(b=>{if(b.tagId===id)b.tagId=null;});save();render();},
   tagHours(i,dw,v){data.tags[i].weekHours[dw]=Math.max(0,parseFloat(v)||0);save();},
