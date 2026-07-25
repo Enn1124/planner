@@ -441,12 +441,13 @@ function buildTodayPlan(sim){
       const doneTodayPool=p.todos.filter(t=>t.done&&t.doneAt===tk).sort((a,b)=>(a.order??0)-(b.order??0));
       /* ⚡(forceToday)·오늘 완료분은 배분이 0이어도 반드시 노출 */
       if(allocH<=0&&!forcedPool.length&&!doneTodayPool.length)continue;
-      const fullPool=[...doneTodayPool,...forcedPool,...normalPool];
-      /* 오늘 완료분·⚡는 배분 몫과 별도로 카운트 (완료할수록 목록이 줄어드는 버그 방지) */
-      let cnt=Math.min(Math.ceil(Math.max(0,allocH)/p.hoursPerTodo-1e-9)+forcedPool.length+doneTodayPool.length,fullPool.length);
+      /* 미완료만 배분 몫에 따라 뽑고, 오늘 완료분은 항상 뒤에 붙임 (완료 후에도 목록이 줄지 않고 완료 항목은 최하단으로 정렬됨) */
+      const undonePool=[...forcedPool,...normalPool];
+      let cnt=Math.min(Math.ceil(Math.max(0,allocH)/p.hoursPerTodo-1e-9)+forcedPool.length,undonePool.length);
       /* 파트(묶음) 고려 (5번): 다음 투두가 사슬로 이어져 있으면 함께 포함 */
-      while(cnt>0&&cnt<fullPool.length&&fullPool[cnt].chain)cnt++;
-      for(let i=0;i<cnt;i++)q.push({todo:fullPool[i],projectId:p.id,projName:p.name,
+      while(cnt>0&&cnt<undonePool.length&&undonePool[cnt].chain)cnt++;
+      const picked=[...undonePool.slice(0,cnt),...doneTodayPool];
+      for(let i=0;i<picked.length;i++)q.push({todo:picked[i],projectId:p.id,projName:p.name,
         hours:p.hoursPerTodo,tagId:tag.id,priority:p.priority,deadline:p.deadline});
     }
     queues[tag.id]=q;
@@ -503,7 +504,10 @@ function buildTodayPlan(sim){
     if(!unplaced[tid].length)delete unplaced[tid];
   }
   _moves.forEach(m=>byBlock[m.to].push(m.it));
-  Object.keys(byBlock).forEach(bid=>byBlock[bid].sort((a,b)=>((a.todo.todaySeq??1e9)-(b.todo.todaySeq??1e9))));
+  /* 각 블록 안에서: 완료 항목은 최하단 → 수동 순서(todaySeq) 순 (오늘의 투두 정렬 요구사항) */
+  const _doneSort=(a,b)=>{const da=a.todo.done?1:0,db=b.todo.done?1:0;return da-db||((a.todo.todaySeq??1e9)-(b.todo.todaySeq??1e9));};
+  Object.keys(byBlock).forEach(bid=>byBlock[bid].sort(_doneSort));
+  Object.keys(unplaced).forEach(tid=>unplaced[tid].sort(_doneSort));
   return{byBlock,unplaced,queues};
 }
 
@@ -575,6 +579,8 @@ function pomoTick(){
       pomo.phase="rest";pomo.workStartAt=null;
     }else pomo.phase="work";
     pomo.leftMs=pomoDur(pomo.phase);pomo.endAt=Date.now()+pomo.leftMs;
+    /* 페이즈 전환 시점에는 전체 재렌더 — 완료 버튼 표시 조건이 바뀌기 때문 */
+    pomoPaint();render();return;
   }else pomo.leftMs=l;
   pomoPaint();
 }
@@ -1423,6 +1429,8 @@ function cTodayTodos(compact,ctx){
     let items=[...allItems];
     if(data.todoSort==="urgent")items.sort((a,b)=>{const da=a.deadline?calcDDayNum(a.deadline):9e9,db=b.deadline?calcDDayNum(b.deadline):9e9;return da-db||a.priority-b.priority;});
     else items.sort((a,b)=>a.priority-b.priority);
+    /* 완료 항목은 최하단으로 */
+    items.sort((a,b)=>(a.todo.done?1:0)-(b.todo.done?1:0));
     const show=compact?items.slice(0,5):items;
     h+=show.map(it=>{const tag=tm[it.tagId];return todoRowHTML(it,tag?tag.color:"var(--sub)",compact,true,tag);}).join("");
     if(compact&&items.length>5)h+='<p class="hint">외 '+(items.length-5)+'개…</p>';
@@ -2087,18 +2095,18 @@ const A={
   tabRename(){const tab=curTab();if(tab.builtin)return;const name=prompt("탭 이름 변경",tab.name);if(!name||!name.trim())return;tab.name=name.trim();save();render();},
   tabDel(){const tab=curTab();if(tab.builtin)return;if(!confirm("'"+tab.name+"' 탭을 삭제할까요?"))return;data.screenStickers=data.screenStickers.filter(s=>s.tabId!==tab.id);data.tabs=data.tabs.filter(t=>t.id!==tab.id);ui.tab="main";save();render();},
   /* 뽀모도로 */
-  pomoBlock(bid){pomo.blockId=bid;pomo.todo=null;pomoResetTimer("work");pomoStart();},
+  pomoBlock(bid){pomo.blockId=bid;pomo.todo=null;pomoResetTimer("work");pomoStart();render();},
   /* 개별 투두와 연동 (4번) */
   pomoTodo(pid,tid){
     const p=data.projects.find(x=>x.id===pid);
     const t=p?p.todos.find(x=>x.id===tid):null;
     if(!t)return;
     pomo.todo={pid,tid,text:t.text.slice(0,12)};pomo.blockId=null;
-    pomoResetTimer("work");pomoStart();},
-  pomoToggle(){pomo.running?pomoPause():pomoStart();},
-  pomoReset(){pomoResetTimer();},
-  pomoSwitch(){pomoResetTimer(pomo.phase==="work"?"rest":"work");},
-  pomoUnlink(){pomo.blockId=null;pomo.todo=null;pomoPaint();},
+    pomoResetTimer("work");pomoStart();render();},
+  pomoToggle(){pomo.running?pomoPause():pomoStart();render();},
+  pomoReset(){pomoResetTimer();render();},
+  pomoSwitch(){pomoResetTimer(pomo.phase==="work"?"rest":"work");render();},
+  pomoUnlink(){pomo.blockId=null;pomo.todo=null;pomoPaint();render();},
   /* 조기 종료 (1번): 작업 완료 → 실제 경과 시간 기록 후 휴식 전환 */
   pomoFinishEarly(){
     if(!pomo.running||pomo.phase!=="work")return;
@@ -2113,7 +2121,7 @@ const A={
         if(_fp.autoHpt){const _avg=projAvgPomoMin(_fp);if(_avg){const _r=Math.max(5,Math.round(_avg/5)*5);_fp.hoursPerTodo=min2hpt(_r);}}}}
     if(_dirty)store.set("planner-state",JSON.stringify(data));
     pomo.phase="rest";pomo.workStartAt=null;pomo.leftMs=pomoDur("rest");
-    pomo.endAt=Date.now()+pomo.leftMs;pomoPaint();
+    pomo.endAt=Date.now()+pomo.leftMs;pomoPaint();render();
   },
   pomoSetWork(v){data.pomodoro.work=Math.max(1,Math.min(120,parseInt(v)||25));if(!pomo.running)pomo.leftMs=pomoDur(pomo.phase);save();pomoPaint();},
   pomoSetRest(v){data.pomodoro.rest=Math.max(1,Math.min(60,parseInt(v)||5));if(!pomo.running)pomo.leftMs=pomoDur(pomo.phase);save();pomoPaint();},
